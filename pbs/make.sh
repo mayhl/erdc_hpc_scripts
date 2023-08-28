@@ -11,7 +11,7 @@ JOB_NAME=$3
 # (Optional) Number of threads
 NTHREADS=$4
 # (Optional)
-ADD_FILES=${@:4:${#@}}
+ADD_FILES=${@:5:${#@}}
 
 
 # Name of PBS script to create 

@@ -27,17 +27,14 @@ else
         exit 1
 fi
 
-# Parsing PBS script relative to HOME
-RELWORKDIR=${PBS_O_WORKDIR/"${HOME}/"/}
-
 # Parsing job ID 
-JOBID=`echo ${PBS_JOBID} | cut -d '.' -f 1`
+JOB_ID=`echo ${PBS_JOBID} | cut -d '.' -f 1`
 
 # Mirroring PBS script path to WORKDIR with 
 # suffix of HPC abbreviation and job ID
-SIM_DPATH=${WORKDIR}/${OUT_DIR}_${HOSTID}${JOBID}
+SIM_DPATH=${PBS_O_WORKDIR/${HOME}/$WORKDIR}_${HOST_ID}${JOB_ID}
 
-if [ ! -d ${JOBID} ]; then
+if [ ! -d ${JOB_ID} ]; then
   mkdir -p ${SIM_DPATH}
 fi
 
