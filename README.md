@@ -5,11 +5,11 @@ Bash scripts to improve workflow on U.S. Army Engineer Research and Development 
 > **NOTE:** You should contact the HPC Helpdesk to change your shell to bash.
 
 ## Table of Conntents
-1. [Installation] (#install)
-2. [SSH to new HPC] (#hpc_swap)
-3. [Copying files between HPCs] (#rsync)
-4. [Quick Portable Bash Script (PBS) File] (#pbs) 
-
+* [Installation] (#install)
+* [SSH to New HPC] (#hpc_swap)
+* [Copying Files Between HPCs] (#rsync)
+* [Quick Portable Bash Script (PBS) File] (#pbs) 
+* [Swapping Between Mirrored Paths] (#swap) 
 
 ## Installation <a name='install'></a>
 To install the HPC scripts, first clone this repository to a directory
@@ -106,16 +106,25 @@ In addition, *qmkMldPBS*, has optional arugments
     
 where: 
 
-1. *JOB\_NAME* is the name of the job .
+1. *JOB\_NAME* is the name of the job.
 2.  *NUMBER\_OF\_THREADS* is the number of threads (not nodes). The command will automatically select the correct number of nodes and MPI threads. 
 3. FILE1, FILE2, ... are additional input/driver files to include on top of the file(s) defined in *MDL\_DEFAULT\_INPUT*.
 
 > **NOTE:** *mkMdlPBS* will accept the same parameters; however, will not lead to a complete PBS file. 
  
+## Swapping Between Mirrored Paths<a name='swap'></a>
 
- 
+To make working between the *\$HOME* and *\$WORKDIR* easier, the command *swap* changes between mirrored paths, e.g.,
+
+    user@hpc: pwd
+    $HOME/current/path/
+    user@hpc: swap
+    user@hpc: pwd
+    $WORKDIR/current/path
+    
+> **NOTE:** If the current path is a simulation in *\$HOME*, multiple folders may exist in *\$WORKDIR* (i.e., mirrored paths with suffixes corresponding to the HPC and job ID); therefore, the swap command will cd into to the parent directory containing the simulation runs. 
 
 > ### TODO 
 1. Create a Makefile to automate installation and create a basic user config file.
-2. Add commands to swap between mirrored $HOME relative path and $WORKDIR relative path. 
+2. Add Job ID list when swapping to *\$WORKDIR* for the simulation folder (instead of going to the parent folder)
 3. Add quick archive commands 
