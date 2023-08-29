@@ -8,6 +8,7 @@ Bash scripts to improve workflow on U.S. Army Engineer Research and Development 
 * [Installation] (#install)
 * [SSH to New HPC] (#hpc_swap)
 * [Copying Files Between HPCs] (#rsync)
+* [Quick Tar] (#qtar)
 * [Quick Portable Bash Script (PBS) File] (#pbs) 
 * [Swapping Between Mirrored Paths] (#swap) 
 
@@ -42,6 +43,34 @@ Files are copied between HPCs via [rsync](https://rsync.samba.org/). Two command
     user@jim03: cpOnyx /path/onyx/file /path/jim/file
     user@jim03: cp2Onyx /path/onyx/directory /path/jim/directory 
 
+## Quick Tar <a name='qtar'></a>
+
+To quickly put a folder into a tarball or extract the files from a tarball (with or without compression using gzip), two wrapper commands *qtar* (no compression) and *gtar* (with compression). The commands will check for the file extension *.tar* (no compression) or *.tar.gz* to determine if tar should be in extract mode. Examples of using these commands are,
+
+    user@hpc: qtar FOLDER
+    user@hpc: gtar ARCHIVE.tar.gz
+
+> **NOTE:** In extraction mode *gtar* and *qtar* are equivalent. 
+
+#### Background Mode
+For larger folders/archives, the commands  *bqtar* and *bqtar* execute their respective commands in the background in a low-priority mode. Outputs from the commands with be piped to a *.log* file.
+
+> **NOTE:** Low-priority mode applies the nice -20 command
+
+#### Python & tqdm   
+
+If the Python package [tqdm](https://tqdm.github.io/) is available, *qtar* and *gtar* will provide progress bars. The Python [venv](https://docs.python.org/3/library/venv.html) module provides a method to set up virtual environments for installing custom Python packages. An existing virtual environment can be added to the config.sh file, e.g., 
+
+    HPC_PYTHON=python
+    HPC_PY_VENV=/path/to/venv
+
+An example of the extended output with tqdm is below,
+
+    user@hpc: gtar FOLDER
+    Processing:  31%|███            |  112M/365M [00:05<00:15, 17.2MB/s]
+    Compressed:   7%|█              | 24.8M/365M [00:05<01:21, 4.38MB/s]
+
+> **NOTE:** The Compressed progress part will not fill up but gives the size of the compressed archive.
 
 ## Quick Portable Bash Script (PBS) File <a name='pbs'></a>
     
@@ -128,3 +157,4 @@ To make working between the *\$HOME* and *\$WORKDIR* easier, the command *swap* 
 1. Create a Makefile to automate installation and create a basic user config file.
 2. Add Job ID list when swapping to *\$WORKDIR* for the simulation folder (instead of going to the parent folder)
 3. Add quick archive commands 
+4. Fix ToC links
