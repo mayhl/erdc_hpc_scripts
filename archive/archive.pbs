@@ -1,0 +1,28 @@
+#!/bin/sh
+#PBS -q transfer
+#PBS -l select=1:ncpus=1
+#PBS -j oe
+#PBS -A Project_ID
+
+# Create a directory for this job in $WORKDIR and cd into it.
+cd $WORKDIR
+JOBID=`echo $PBS_JOBID | cut -d . -f 1`
+mkdir my_job.$JOBID
+cd my_job.$JOBID
+
+# If the archive server is available, get the data. Otherwise, exit.
+STATUS=`archive stat -retry 1 | grep 'on-line' | wc -l`
+if [ $STATUS -eq 0 ]; then
+  echo "Archive system not on-line!!"
+  echo "Exiting: `date`"
+  exit 2
+fi
+echo "Archive system is on-line; retrieving job files."
+archive get my_input_data.tar.gz
+
+echo "Input data files retrieved: `date`"
+echo "Unpacking input tar file"
+tar xvzf my_input_data.tar.gz
+
+echo "Directory contents:"
+ls
