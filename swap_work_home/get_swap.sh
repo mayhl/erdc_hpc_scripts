@@ -1,5 +1,6 @@
 #!/bin/bash
 
+. ${HPC_CMDS_PATH}/config.sh
 # Script to echo the mirror path in either $HOME or $WORK
 # 	Returns exit code 0 and echos mirrored path if valid path found
 # 	Returns exit code 1 and echos alternative mirrored path followed by warning message 
@@ -7,17 +8,34 @@
 
 
 # Checking if either in $WORKDIR or $HOME
-PWD=$(pwd)
-if [[ $PWD == $HOME* ]]; then
-	IS_HOME='T'
-	SWAP_PATH=${PWD/$HOME/$WORKDIR}
-elif [[ $PWD == $WORKDIR* ]]; then
-	IS_HOME='F'
-	SWAP_PATH=${PWD/$WORKDIR/$HOME}
-else
-	echo "ERROR: Can now swap, current path is neither in \$HOME or \$WORKDIR!"
+# FUTURE: Better fix for trailing / and paths with shared bases
+#         e.g. path/example vs path/example_2
+PWD=$(realpath $(pwd))/
+
+IS_FOUND='F'
+for i in "${!HPC_SWAP_HOMEDIRS[@]}"; do
+
+	HDIR=${HPC_SWAP_HOMEDIRS[i]}
+	WDIR=${HPC_SWAP_WORKDIRS[i]}
+	if [[ $PWD == $HDIR/* ]]; then
+		SWAP_PATH=${PWD/$HDIR/$WDIR}
+		IS_FOUND='T'
+		IS_HOME='T'
+		break
+	elif [[ $PWD == $WDIR/* ]]; then
+		SWAP_PATH=${PWD/$WDIR/$HDIR}
+		IS_FOUND='T'
+		IS_HOME='F'
+		break
+	fi
+
+done
+
+if [[ $IS_FOUND == 'F' ]]; then
+	echo "ERROR: Can not swap, current path is neither in ${HPC_SWAP_HOMEDIRS[@]} or in ${HPC_SWAP_WORKDIRS[@]}!"
 	exit 2
 fi
+
 
 # Simple mirrored path found
 if [[ -d $SWAP_PATH ]]; then
