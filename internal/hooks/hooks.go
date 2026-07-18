@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -154,6 +155,51 @@ func Exec(hookPath, runDir, jobID string) Result {
 	}
 	r.Data = data
 	return r
+}
+
+// PackTimeout is the pack hook's own exec budget. Unlike the read-time Timeout, the
+// pack hook runs during `archive put` — a deliberate bulk op, not an inline listing —
+// and may stat thousands of files on a cold Lustre cache, so it gets a far longer
+// window. It stays a metadata probe (names groups by glob, never touches bytes), so
+// the budget still bounds only manifest emission, not the tar+put that follows. A var
+// so tests can shorten it.
+var PackTimeout = 60 * time.Second
+
+// PackGroup is one tar chunk the pack hook asks for: a filename suffix and the leaf-
+// relative member masks (filepath.Match globs) mu expands into it.
+type PackGroup struct {
+	Suffix  string   `json:"suffix"`
+	Members []string `json:"members"`
+}
+
+// PackManifest is the pack hook's whole output — the split plan for one leaf. An empty
+// Tars (or no hook at all) leaves mu to pack the leaf as one tar.
+type PackManifest struct {
+	Tars []PackGroup `json:"tars"`
+}
+
+// ExecPack runs a leaf's pack hook (CWD = leafDir) and decodes its split manifest. It
+// carries the PACK contract, not the flat-metrics one: stdout is one nested {"tars":[…]}
+// object read under PackTimeout. Any failure — timeout, non-zero exit, unparsable
+// stdout — is an error so the caller degrades to one whole-leaf tar; a broken hook never
+// blocks an archive.
+func ExecPack(hookPath, leafDir string) (PackManifest, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), PackTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, hookPath)
+	cmd.Dir = leafDir
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return PackManifest{}, errors.New("timed out")
+	}
+	if err != nil {
+		return PackManifest{}, fmt.Errorf("%w", err)
+	}
+	var m PackManifest
+	if jerr := json.Unmarshal(out, &m); jerr != nil {
+		return PackManifest{}, errors.New(`stdout is not a {"tars":[…]} object`)
+	}
+	return m, nil
 }
 
 func splitPath(p string) []string {

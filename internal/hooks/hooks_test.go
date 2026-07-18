@@ -139,3 +139,41 @@ func TestExecSemantics(t *testing.T) {
 		t.Fatalf("env: %+v", env.Data)
 	}
 }
+
+func TestExecPack(t *testing.T) {
+	old := PackTimeout
+	PackTimeout = 60 * time.Second // AV can stall a fresh script's first exec
+	t.Cleanup(func() { PackTimeout = old })
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// a well-formed manifest parses into the typed groups, CWD = the leaf
+	ok := write("pack", "#!/bin/sh\necho '{\"tars\":[{\"suffix\":\"t000\",\"members\":[\"output/f_000*.nc\"]}]}'\n")
+	m, err := ExecPack(ok, dir)
+	if err != nil {
+		t.Fatalf("ExecPack: %v", err)
+	}
+	if len(m.Tars) != 1 || m.Tars[0].Suffix != "t000" || m.Tars[0].Members[0] != "output/f_000*.nc" {
+		t.Fatalf("manifest: %+v", m)
+	}
+
+	// non-zero exit and non-JSON stdout are both errors → caller degrades to one tar
+	if _, err := ExecPack(write("boom", "#!/bin/sh\nexit 1\n"), dir); err == nil {
+		t.Fatal("expected an error on non-zero exit")
+	}
+	if _, err := ExecPack(write("junk", "#!/bin/sh\necho not-json\n"), dir); err == nil {
+		t.Fatal("expected an error on non-JSON stdout")
+	}
+
+	// a hook that outruns the budget is an error, not a hang
+	PackTimeout = 100 * time.Millisecond
+	if _, err := ExecPack(write("slow", "#!/bin/sh\nsleep 5\n"), dir); err == nil {
+		t.Fatal("expected a timeout error")
+	}
+}
