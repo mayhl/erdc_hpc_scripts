@@ -128,28 +128,36 @@ type target struct {
 // model (cluster default, node override) makes the resolved value genuinely hard to read off
 // the file, which is why `show` annotates every value with where it came from.
 func configCmd() *cobra.Command {
-	var interactive bool
+	var interactive, allSystems bool
+	var decommission string
 	c := &cobra.Command{
 		Use:   "config",
 		Short: "Show or edit config.toml (values, with their scope).",
 		Long: "Print config.toml's values annotated with the scope each resolves from — a node's\n" +
 			"own block, its cluster's default, or a built-in — or edit them in place with -i.\n\n" +
 			"Edits are surgical: mu rewrites only the lines you changed, so comments, ordering\n" +
-			"and alignment survive. Declaring a NEW cluster or machine stays a hand-edit; so do\n" +
-			"the inline maps (submit_queue, queue_class) and the fleet list.\n\n" +
-			"`account` becomes a picker once `mu hpc usage` has listed your subprojects — it\n" +
-			"caches their names, so the panel itself never needs a ticket.\n\n" +
+			"and alignment survive. Nodes listed without a [[cluster.node]] block show as\n" +
+			"unconfigured; editing one in -i creates its block. Decommissioned machines are\n" +
+			"hidden unless -e/--all-systems; --decommission <node> retires one.\n\n" +
 			"    mu config          # the resolved view\n" +
-			"    mu config -i       # the panel",
+			"    mu config -i       # the panel\n" +
+			"    mu config -e       # include decommissioned systems",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if interactive {
-				return configEdit()
+			switch {
+			case decommission != "":
+				return configDecommission(decommission)
+			case interactive:
+				return configEdit(allSystems)
+			default:
+				return configShow(allSystems)
 			}
-			return configShow()
 		},
 	}
-	c.Flags().BoolVarP(&interactive, "interactive", "i", false, "edit in the panel")
+	f := c.Flags()
+	f.BoolVarP(&interactive, "interactive", "i", false, "edit in the panel")
+	f.BoolVarP(&allSystems, "all-systems", "e", false, "include decommissioned systems")
+	f.StringVar(&decommission, "decommission", "", "retire a `node`: drop its block, move it nodes→decommissioned")
 	return c
 }
 
@@ -171,7 +179,7 @@ func configDoc() (path, text string, doc *tomledit.Doc, err error) {
 // write-back target of every leaf, keyed by its path. A leaf's VALUE is what the key
 // resolves to and its ORIGIN says where that came from — so an unset node key shows the
 // cluster's value, and editing it writes the override into the node's own block.
-func buildTree(doc *tomledit.Doc) ([]render.EditorNode, map[string]target) {
+func buildTree(doc *tomledit.Doc, showAll bool) ([]render.EditorNode, map[string]target) {
 	targets := map[string]target{}
 	var root []render.EditorNode
 
@@ -275,6 +283,17 @@ func buildTree(doc *tomledit.Doc) ([]render.EditorNode, map[string]target) {
 		for _, nm := range unconfiguredNodes(doc, ci) {
 			kids = append(kids, nodeNode(ci, cname, nm, -1, accts))
 		}
+		// Decommissioned machines are hidden unless -e/--all-systems: they're record-only
+		// (a name in `decommissioned`, no block, not submittable).
+		if showAll {
+			for _, nm := range decommissionedNodes(doc, ci) {
+				kids = append(kids, render.EditorNode{
+					Label: nm + render.Glyph("  · ", "  * ") + "decommissioned",
+					Key:   nm,
+					Hue:   render.HueDim,
+				})
+			}
+		}
 		root = append(root, render.EditorNode{Label: "[[cluster]] " + cname, Key: cname, Hue: render.HueLoc, Children: kids})
 	}
 	return root, targets
@@ -303,6 +322,80 @@ func unconfiguredNodes(doc *tomledit.Doc, ci int) []string {
 	return out
 }
 
+// decommissionedNodes returns cluster ci's `decommissioned`-array members — machines that
+// were retired from service, kept only as a record (no block). Shown solely under -e.
+func decommissionedNodes(doc *tomledit.Doc, ci int) []string {
+	if raw, ok := doc.Value(ci, "decommissioned"); ok {
+		return arrayMembers(raw)
+	}
+	return nil
+}
+
+// decommissionNode retires a machine: drops its [[cluster.node]] block, removes its name
+// from the owning cluster's `nodes` array, and appends it to that cluster's `decommissioned`
+// array (created if absent). Returns the cluster name and true, or "",false if node is in no
+// cluster's nodes list.
+func decommissionNode(doc *tomledit.Doc, node string) (string, bool) {
+	for _, ci := range doc.Tables("cluster") {
+		raw, ok := doc.Value(ci, "nodes")
+		if !ok || !sliceHas(arrayMembers(raw), node) {
+			continue
+		}
+		cname := tableValue(doc, ci, "name")
+		if ni := findNodeBlock(doc, ci, node); ni >= 0 {
+			doc.DeleteTable(ni)                     // re-parses → re-resolve the cluster
+			ci = doc.Find("cluster", "name", cname) // (its index is stable, but be explicit)
+		}
+		doc.Set(ci, "nodes", tomlArray(sliceRemove(arrayMembers(mustValue(doc, ci, "nodes")), node)))
+		doc.Set(ci, "decommissioned", tomlArray(append(decommissionedNodes(doc, ci), node)))
+		return cname, true
+	}
+	return "", false
+}
+
+// findNodeBlock is the [[cluster.node]] under cluster ci named name, or -1.
+func findNodeBlock(doc *tomledit.Doc, ci int, name string) int {
+	for _, ni := range doc.Tables("cluster.node") {
+		if doc.Owner(ni) == ci && tableValue(doc, ni, "name") == name {
+			return ni
+		}
+	}
+	return -1
+}
+
+func mustValue(doc *tomledit.Doc, ci int, key string) string { v, _ := doc.Value(ci, key); return v }
+
+// tomlArray renders names as a single-line TOML string array; empty → `[]`.
+func tomlArray(names []string) string {
+	if len(names) == 0 {
+		return "[]"
+	}
+	qs := make([]string, len(names))
+	for i, n := range names {
+		qs[i] = tomledit.Quote(n)
+	}
+	return "[" + strings.Join(qs, ", ") + "]"
+}
+
+func sliceHas(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func sliceRemove(s []string, v string) []string {
+	out := s[:0:0]
+	for _, x := range s {
+		if x != v {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 // arrayMembers parses a single-line TOML string array (`["a", "b"]`) into its members —
 // enough for the config's flat name arrays (nodes, decommissioned, fleet), not a general
 // TOML array parser.
@@ -326,12 +419,12 @@ func tableValue(doc *tomledit.Doc, ti int, key string) string {
 }
 
 // configShow prints every scalar with the scope it resolves from.
-func configShow() error {
+func configShow(showAll bool) error {
 	path, _, doc, err := configDoc()
 	if err != nil {
 		return err
 	}
-	root, _ := buildTree(doc)
+	root, _ := buildTree(doc, showAll)
 	render.Info("config: " + path)
 	printTree(root, 0)
 	return nil
@@ -361,7 +454,7 @@ func printTree(nodes []render.EditorNode, depth int) {
 
 // configEdit opens the panel, then applies whatever changed as a surgical patch: diff,
 // confirm, back up, write.
-func configEdit() error {
+func configEdit(showAll bool) error {
 	path, old, doc, err := configDoc()
 	if err != nil {
 		return err
@@ -374,7 +467,7 @@ func configEdit() error {
 		render.Warn("this machine's config.toml is a replica — a later `mu setup sync` from your laptop overwrites it (pull it back with `mu setup sync pull`)")
 	}
 
-	root, targets := buildTree(doc)
+	root, targets := buildTree(doc, showAll)
 	changes, saved, err := render.Editor(render.EditorSpec{
 		Title:     "config " + path,
 		Root:      root,
@@ -405,6 +498,38 @@ func configEdit() error {
 		return runErr("%s", err)
 	}
 	render.OK(fmt.Sprintf("wrote %s (backup: %s.bak)", path, path))
+	return nil
+}
+
+// configDecommission retires a machine non-interactively: decommissionNode edits the doc,
+// then the same diff+confirm+write path as the panel.
+func configDecommission(node string) error {
+	path, old, doc, err := configDoc()
+	if err != nil {
+		return err
+	}
+	cname, ok := decommissionNode(doc, node)
+	if !ok {
+		return runErr("no node %q in any cluster's nodes list", node)
+	}
+	merged := doc.String()
+	if merged == old {
+		render.Info("no change")
+		return nil
+	}
+	render.Info(fmt.Sprintf("decommission %s (%s): drop its block, move nodes→decommissioned", node, cname))
+	showConfigDiff(old, merged)
+	fmt.Fprintf(os.Stderr, "write to %s? [y/N] ", path)
+	var r string
+	_, _ = fmt.Scanln(&r)
+	if strings.ToLower(strings.TrimSpace(r)) != "y" {
+		render.Info("aborted")
+		return nil
+	}
+	if err := writeLocalConfig(path, []byte(old), merged); err != nil {
+		return runErr("%s", err)
+	}
+	render.OK(fmt.Sprintf("decommissioned %s — wrote %s (backup: %s.bak)", node, path, path))
 	return nil
 }
 

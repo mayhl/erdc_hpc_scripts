@@ -31,7 +31,7 @@ account   = "CLUSTER-ALLOC"
 // would actually show.
 func findLeaf(t *testing.T, doc *tomledit.Doc, path ...string) (value, origin string) {
 	t.Helper()
-	root, _ := buildTree(doc)
+	root, _ := buildTree(doc, false)
 	nodes := root
 	for d, want := range path {
 		for _, n := range nodes {
@@ -72,7 +72,7 @@ func TestBuildTreeProvenance(t *testing.T) {
 		t.Errorf("node-b cores_per_node = %q (%q), want unset", v, o)
 	}
 	// A table absent from the file is not offered at all (creating it is a hand-edit).
-	root, _ := buildTree(doc)
+	root, _ := buildTree(doc, false)
 	for _, n := range root {
 		if n.Label == "[sshfs]" {
 			t.Error("offered [sshfs], which the file doesn't have")
@@ -84,7 +84,7 @@ func TestBuildTreeProvenance(t *testing.T) {
 // must write an override into the node's own block, not touch the cluster's line.
 func TestApplyChanges(t *testing.T) {
 	doc := tomledit.Parse(cfgSample)
-	_, targets := buildTree(doc)
+	_, targets := buildTree(doc, false)
 
 	apply := func(path []string, val string) {
 		tgt, ok := targets[strings.Join(path, "\x00")]
@@ -129,7 +129,7 @@ func TestApplyChanges(t *testing.T) {
 // for a while the decoration leaked into the path and missed every target.
 func TestEveryLeafHasATarget(t *testing.T) {
 	doc := tomledit.Parse(cfgSample)
-	root, targets := buildTree(doc)
+	root, targets := buildTree(doc, false)
 
 	leaves := 0
 	var walk func(nodes []render.EditorNode, prefix []string)
@@ -250,5 +250,37 @@ func TestApplyChangesMultipleNewNodes(t *testing.T) {
 	// each block landed under its OWN cluster (not swapped by a stale index)
 	if d.Owner(a) != d.Find("cluster", "name", "dsrc1") || d.Owner(b) != d.Find("cluster", "name", "dsrc2") {
 		t.Fatalf("blocks under wrong cluster:\n%s", got)
+	}
+}
+
+func TestDecommissionNode(t *testing.T) {
+	d := tomledit.Parse("[[cluster]]\nname  = \"dsrc1\"\nnodes = [\"node-a\", \"node-b\"]\n\n  [[cluster.node]]\n  name = \"node-b\"\n")
+	cname, ok := decommissionNode(d, "node-b")
+	if !ok || cname != "dsrc1" {
+		t.Fatalf("decommission returned %q,%v", cname, ok)
+	}
+	got := d.String()
+	ci := d.Find("cluster", "name", "dsrc1")
+	if findNodeBlock(d, ci, "node-b") >= 0 {
+		t.Fatalf("block not dropped:\n%s", got)
+	}
+	if nodes := arrayMembers(mustValue(d, ci, "nodes")); sliceHas(nodes, "node-b") || !sliceHas(nodes, "node-a") {
+		t.Fatalf("nodes = %v\n%s", nodes, got)
+	}
+	if dec := decommissionedNodes(d, ci); !sliceHas(dec, "node-b") {
+		t.Fatalf("decommissioned = %v\n%s", dec, got)
+	}
+	// unknown node → not found, no change
+	if _, ok := decommissionNode(d, "nope"); ok {
+		t.Fatal("expected not-found for an unknown node")
+	}
+}
+
+func TestTomlArray(t *testing.T) {
+	if got := tomlArray([]string{"a", "b"}); got != `["a", "b"]` {
+		t.Fatalf("tomlArray = %q", got)
+	}
+	if got := tomlArray(nil); got != "[]" {
+		t.Fatalf("empty tomlArray = %q", got)
 	}
 }
