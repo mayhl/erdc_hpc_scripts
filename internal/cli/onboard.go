@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -137,8 +138,8 @@ func (o *onboard) run(nodeOrTarget string) error {
 		render.Detail(fmt.Sprintf("[dry] scp %s %s:%s", localMu, target, o.bin))
 	} else {
 		render.Info(fmt.Sprintf("Pushing mu → %s:%s…", target, o.bin))
-		if err := exec.Command("scp", "-q", localMu, target+":"+o.bin).Run(); err != nil {
-			return fmt.Errorf("scp mu: %w", err)
+		if err := o.push(target, localMu, o.bin); err != nil {
+			return err
 		}
 	}
 	if err := o.ssh(target, "chmod +x "+o.bin); err != nil {
@@ -211,8 +212,8 @@ func (o *onboard) seedConfig(target string) error {
 		render.Warn("config.toml already on target — left untouched")
 		return nil
 	}
-	if err := exec.Command("scp", "-q", ex, target+":"+dst).Run(); err != nil {
-		return fmt.Errorf("scp config.toml: %w", err)
+	if err := o.push(target, ex, dst); err != nil {
+		return err
 	}
 	render.OK("config.toml seeded — fill in this cluster's identity")
 	return nil
@@ -243,6 +244,33 @@ Next steps on %s:
 }
 
 // ssh runs a mutating remote command, echoing it first; under --dry-run it only echoes.
+// push copies local → target:remote over ssh, writing a temp file then `mv`-ing it over
+// the target. Two reasons not to scp straight onto remote: (1) modern scp rides the SFTP
+// subsystem, which DoD/HPC servers often disable (scp dies with a bare exit 1), whereas a
+// plain ssh command — which we already used for mkdir — works; (2) re-onboarding a box
+// whose mu is running can't truncate the binary in place ("text file busy"), but a rename
+// replaces the name while the live process keeps the old inode. Captures the remote's
+// stderr (scp -q swallowed it); ~ expands in the login shell.
+func (o *onboard) push(target, local, remote string) error {
+	f, err := os.Open(local)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	tmp := remote + ".mu-onboard.tmp"
+	cmd := exec.Command("ssh", "-q", target, "cat > "+tmp+" && mv -f "+tmp+" "+remote)
+	cmd.Stdin = f
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(errb.String()); msg != "" {
+			return fmt.Errorf("push %s → %s: %w: %s", filepath.Base(local), remote, err, msg)
+		}
+		return fmt.Errorf("push %s → %s: %w", filepath.Base(local), remote, err)
+	}
+	return nil
+}
+
 func (o *onboard) ssh(target, remote string) error {
 	if o.dryRun {
 		render.Detail("[dry] ssh " + target + " " + remote)
