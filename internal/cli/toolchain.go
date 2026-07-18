@@ -35,17 +35,16 @@ func toolchainCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if dump {
-				fmt.Print(setup.Manifest())
+				s, err := setup.DumpManifest()
+				if err != nil {
+					return fmt.Errorf("read toolchain manifest: %w", err)
+				}
+				fmt.Print(s)
 				return nil
 			}
 			if t.module && t.prefix == "" {
 				return usageErr("--module needs --prefix <path> (the shared install root)")
 			}
-			specs, err := setup.Specs()
-			if err != nil {
-				return fmt.Errorf("read toolchain manifest: %w", err)
-			}
-			t.specs = specs
 			if runtime.GOOS == "darwin" {
 				return t.darwin()
 			}
@@ -66,29 +65,29 @@ type toolchain struct {
 	module   bool
 	withBrew bool
 	dryRun   bool
-	specs    []string
 }
 
 // linux installs the toolchain with mise: bootstrap mise if absent, then either the
-// per-user install of the embedded specs (bare) or the shared-module deploy (--module).
+// per-user emit+install (bare) or the shared-module deploy (--module). The bare path
+// writes the embedded tiers to MISE_CONFIG_DIR (so the running shell resolves them) and
+// runs a config-resolved `mise install` under the MU_MODULES-composed MISE_ENV.
 func (t *toolchain) linux() error {
 	mise, present := misePath()
+	cfgDir := miseConfigDir()
+	env := miseEnv(fmtOptedIn())
 	render.Info("toolchain plan (linux):")
 	if present {
 		render.Detail("  mise: " + mise)
 	} else {
 		render.Detail("  mise: not found → bootstrap (curl https://mise.run | sh)")
 	}
-	dest := t.prefix
-	if dest == "" {
-		dest = "(mise per-user default)"
-	}
-	render.Detail("  install root: " + dest)
 	if t.module {
-		render.Detail("  tiers: embedded manifest + config-resolved base/hpc (MISE_ENV=hpc)")
+		render.Detail("  install root: " + t.prefix)
+		render.Detail("  tiers: base + hpc (config-resolved, MISE_ENV=hpc)")
 		render.Detail("  modulefile: " + t.modulefilePath() + " — one prepend-path per tool bin dir")
 	} else {
-		render.Detail("  tools: " + strings.Join(t.specs, ", "))
+		render.Detail("  config: " + cfgDir + " (emitted from the embedded tiers)")
+		render.Detail("  tiers: MISE_ENV=" + env + " (base always; hpc; fmt via MU_MODULES)")
 	}
 	if t.dryRun {
 		render.OK("dry-run — nothing installed")
@@ -104,38 +103,94 @@ func (t *toolchain) linux() error {
 	if t.module {
 		return t.deployModule(mise)
 	}
-	env := os.Environ()
-	if t.prefix != "" {
-		env = overrideEnv(env, "MISE_DATA_DIR="+t.prefix)
+	if err := stageMiseConfigs(cfgDir); err != nil {
+		return fmt.Errorf("emit mise config: %w", err)
 	}
-	if err := runEnv(env, mise, append([]string{"install"}, t.specs...)...); err != nil {
+	installEnv := overrideEnv(os.Environ(), "MISE_ENV="+env)
+	if err := runEnv(installEnv, mise, "install"); err != nil {
 		return fmt.Errorf("mise install: %w", err)
 	}
-	_ = runEnv(env, mise, "reshim")
-	render.OK("installed toolchain: " + strings.Join(t.specs, ", "))
+	_ = runEnv(installEnv, mise, "reshim")
+	render.OK("installed toolchain (MISE_ENV=" + env + ") + wrote " + cfgDir)
 	return nil
 }
 
+// dryNote annotates a plan line when nothing is actually written.
+func dryNote(dry bool) string {
+	if dry {
+		return " — dry-run, skipped"
+	}
+	return ""
+}
+
+// miseConfigDir is where the running shell reads mise config — $MISE_CONFIG_DIR, else the
+// XDG default ~/.config/mise (per the mise-dir split: config stays at XDG, only DATA/
+// CACHE/STATE redirect).
+func miseConfigDir() string {
+	if d := os.Getenv("MISE_CONFIG_DIR"); d != "" {
+		return d
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "mise")
+}
+
+// stageMiseConfigs writes the embedded tier tree into dir (creating conf.d/), the emit
+// step: mu is the source of truth, these are the generated copies the shell + install read.
+func stageMiseConfigs(dir string) error {
+	files, err := setup.MiseFiles()
+	if err != nil {
+		return err
+	}
+	for rel, content := range files {
+		dst := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fmtOptedIn reports whether MU_MODULES includes the fmt module (space- or comma-list).
+func fmtOptedIn() bool {
+	for _, m := range strings.FieldsFunc(os.Getenv("MU_MODULES"), func(r rune) bool { return r == ' ' || r == ',' }) {
+		if m == "fmt" {
+			return true
+		}
+	}
+	return false
+}
+
+// miseEnv composes MISE_ENV for the install: hpc always (the nvim/CLI stack this command
+// installs; base + conf.d are unconditional), plus fmt when opted in via MU_MODULES.
+func miseEnv(withFmt bool) string {
+	if withFmt {
+		return "hpc,fmt"
+	}
+	return "hpc"
+}
+
 // deployModule installs the shared HPC runtime into --prefix and writes the Tcl
-// modulefile. The embedded manifest is staged as a temp-dir mise.toml so one
-// config-resolved `mise install` covers manifest + base + hpc tiers in a single
-// resolution; MISE_ENV is pinned to hpc (fmt is personal, never shared) and the cache
-// rides under the prefix so a small $HOME quota never blocks the deploy.
+// modulefile. The embedded tiers are staged into a temp dir as local mise config so one
+// config-resolved `mise install` covers base + hpc in a single resolution; MISE_ENV is
+// pinned to hpc (fmt is personal, never shared) and the cache rides under the prefix so a
+// small $HOME quota never blocks the deploy.
 func (t *toolchain) deployModule(mise string) error {
 	dir, err := os.MkdirTemp("", "mu-toolchain-*")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	manifest := filepath.Join(dir, "mise.toml")
-	if err := os.WriteFile(manifest, []byte(setup.Manifest()), 0o644); err != nil {
-		return err
+	if err := stageMiseConfigs(dir); err != nil {
+		return fmt.Errorf("stage mise config: %w", err)
 	}
 	env := overrideEnv(os.Environ(),
 		"MISE_DATA_DIR="+t.prefix,
 		"MISE_CACHE_DIR="+filepath.Join(t.prefix, "cache"),
 		"MISE_ENV=hpc")
-	if err := runEnvDir(dir, env, mise, "trust", manifest); err != nil {
+	if err := runEnvDir(dir, env, mise, "trust", dir); err != nil {
 		return fmt.Errorf("mise trust: %w", err)
 	}
 	if err := runEnvDir(dir, env, mise, "install"); err != nil {
@@ -158,19 +213,30 @@ func (t *toolchain) deployModule(mise string) error {
 	return t.writeModulefile(bins)
 }
 
-// darwin prints the Homebrew + mise bootstrap (some tools are brew-only on Intel macs, so
-// mise can't cover everything) — running it only with --with-brew. Never drives brew silently.
+// darwin emits the mise tiers (so the shell resolves them) and prints the Homebrew + mise
+// bootstrap (some tools are brew-only on Intel macs, so mise can't cover everything) —
+// running the brew step only with --with-brew. Never drives brew silently.
 func (t *toolchain) darwin() error {
 	const brew = "brew install mise git-delta difftastic"
 	const activate = `eval "$(mise activate zsh)"`
+	cfgDir := miseConfigDir()
 	if !t.withBrew || t.dryRun {
-		render.Info("macOS toolchain bootstrap (run these yourself):")
-		render.Detail("  " + brew)
+		render.Info("macOS toolchain bootstrap:")
+		render.Detail("  config: " + cfgDir + " (emitted from the embedded tiers" + dryNote(t.dryRun) + ")")
+		render.Detail("  " + brew + "   # run yourself")
 		render.Detail("  " + activate + "   # add to ~/.zshrc")
+		if !t.dryRun {
+			if err := stageMiseConfigs(cfgDir); err != nil {
+				return fmt.Errorf("emit mise config: %w", err)
+			}
+		}
 		if !t.withBrew {
 			render.Info("re-run with --with-brew to execute the brew step")
 		}
 		return nil
+	}
+	if err := stageMiseConfigs(cfgDir); err != nil {
+		return fmt.Errorf("emit mise config: %w", err)
 	}
 	if err := runEnv(os.Environ(), "brew", "install", "mise", "git-delta", "difftastic"); err != nil {
 		return fmt.Errorf("brew install: %w", err)

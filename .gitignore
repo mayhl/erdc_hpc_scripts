@@ -47,6 +47,9 @@ luac.out
 *.hex
 
 config.toml
+# ...except the embedded mise BASE tier (tool pins, no PII — the guard backstops it);
+# //go:embed needs it tracked or a fresh clone won't build.
+!internal/setup/mise/config.toml
 
 custom.sh
 ARCHITECTURE.md

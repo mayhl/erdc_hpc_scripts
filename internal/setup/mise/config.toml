@@ -1,0 +1,38 @@
+# mise — base CLI toolchain (all machines, always active). General-purpose CLI
+# utilities that nvim also shells out to (Telescope → rg/fd). EMPTY for now: the CLI
+# tier (ripgrep/fd/bat/eza/lazygit/ast-grep) lands in step 2.3, once per-platform
+# backends are sorted — notably `fd` ships no darwin/amd64 prebuilt (Intel Mac uses
+# brew or cargo), so it can't be a blanket all-machines mise pin. Formatter/lint
+# enforcement → config.fmt.toml (opt-in via MU_MODULES∋fmt); nvim editor stack →
+# config.hpc.toml (MISE_ENV∋hpc). See ARCHITECTURE.md §3.
+
+[settings]
+# Restricted-net tolerances (harmless elsewhere): the proxy path is slow enough that
+# mise's default HTTP timeout aborts mid-download, and nodejs gpg keys can't be
+# fetched on the restricted net — sha256 checksums still verify the tarballs.
+http_timeout = "120s"
+node.verify = false
+
+[tools]
+# git prettify (all machines).
+#   delta      → syntax-highlighted diff/log pager (core.pager, see git/config)
+#   difftastic → structural tree-sitter diff, on-demand via `git dft`
+# delta pinned to 0.18.2 (github backend): it's the LAST release with an
+# x86_64-apple-darwin prebuilt — 0.19+ is arm-mac-only, and aqua declares no
+# darwin/amd64 at all. 0.18.2 covers Intel mac + arm mac + linux. Bump to latest
+# once this Intel Mac is retired (or upstream restores the amd64-darwin build).
+"github:dandavison/delta" = "0.18.2"
+difftastic = "latest"
+
+# base CLI tier (step 2.3) — retires the cargo/rustup delivery vehicle on HPC.
+# rg/bat/ast-grep are also nvim runtime deps (Telescope shells out); dual-role,
+# personal-stack owned. EXCLUDED for missing darwin/amd64 prebuilts (Intel mac):
+# fd (brew/cargo there), eza (linux gets it via config.hpc.toml, github backend).
+ripgrep = "latest"
+bat = "latest"
+ast-grep = "latest"
+lazygit = "latest"
+ffmpeg = "latest" # static aqua build — no system codec/lib deps on the clusters
+fzf = "latest"    # shell integration sourced in zsh.tools.zsh (`fzf --zsh`), replaces ~/.fzf.zsh
+uv = "latest"     # backs the pipx tools — the backend only sees uv when it's config-ACTIVE
+tmux = "latest"

@@ -96,14 +96,14 @@ func checkToolchainPresent() render.StatusRow {
 	if !present {
 		return render.StatusRow{Level: "warn", Name: "toolchain", Detail: "mise not installed — run mu setup toolchain"}
 	}
-	specs, err := setup.Specs()
+	names, err := setup.BaseToolNames()
 	if err != nil {
 		return render.StatusRow{Level: "warn", Name: "toolchain", Detail: "mise ok; manifest unreadable: " + err.Error()}
 	}
 	out, _ := exec.Command(mise, "ls").CombinedOutput()
 	ls := string(out)
 	var missing []string
-	for _, spec := range specs {
+	for _, spec := range names {
 		if tool := toolName(spec); !strings.Contains(ls, tool) {
 			missing = append(missing, tool)
 		}
@@ -111,7 +111,7 @@ func checkToolchainPresent() render.StatusRow {
 	if len(missing) > 0 {
 		return render.StatusRow{Level: "warn", Name: "toolchain", Detail: "missing " + strings.Join(missing, ", ") + " — run mu setup toolchain"}
 	}
-	return render.StatusRow{Level: "ok", Name: "toolchain", Detail: fmt.Sprintf("mise + %d tools", len(specs))}
+	return render.StatusRow{Level: "ok", Name: "toolchain", Detail: fmt.Sprintf("mise + %d base tools", len(names))}
 }
 
 // checkBuildCurrent compares the running binary's VCS stamp to MU_ROOT's HEAD — the

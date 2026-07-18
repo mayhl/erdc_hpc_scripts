@@ -1,0 +1,10 @@
+# mise — Cat-2 runtimes / backends (ARCHITECTURE.md §3), merged unconditionally
+# (conf.d can't env-gate — fine: these are always-on). Kept apart from the base
+# CLI tier: these are language runtimes that BACK tools, not tools themselves.
+#
+# node → prettier backend + future node LSPs (bash-language-server, pyright);
+# retires nvm on the HPC boxes (tree parked at ~/.nvm). python stays in
+# config.hpc.toml (pipx-venv backend role there, deliberately off module PATHs).
+
+[tools]
+node = "24"

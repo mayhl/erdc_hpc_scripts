@@ -1,0 +1,16 @@
+# mise — personal formatter/lint/DAP enforcement stack. OPT-IN: active only when
+# MISE_ENV contains `fmt` (add `fmt` to MU_MODULES). Feeds the git
+# pre-commit hook, `mu fmt`, and nvim's ownership-gated autoformat. Default mode
+# leaves formatting to Mason/your editor. See ARCHITECTURE.md §3, §6.
+
+[tools]
+# formatters / linters — prebuilt binaries (no runtime backend)
+gofumpt = "0.10.0"
+golangci-lint = "2.12.2"
+shfmt = "3.13.1"
+shellcheck = "0.11.0"
+stylua = "2.5.2"
+ruff = "0.15.20"
+# formatters via the python backend (pipx, uv-backed)
+"pipx:fprettify" = "0.3.7"
+"pipx:cmakelang" = "0.6.13" # provides cmake-format
