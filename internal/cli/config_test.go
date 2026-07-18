@@ -168,3 +168,39 @@ func TestIntOrEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestUnconfiguredNodes(t *testing.T) {
+	const doc = `[[cluster]]
+name  = "dsrc1"
+nodes = ["node-a", "node-b", "node-c"]
+
+  [[cluster.node]]
+  name = "node-a"
+
+[[cluster]]
+name  = "dsrc2"
+nodes = ["node-d"]
+`
+	d := tomledit.Parse(doc)
+	// node-a has a block; node-b and node-c are listed-but-unconfigured, in array order
+	if got := unconfiguredNodes(d, d.Find("cluster", "name", "dsrc1")); strings.Join(got, ",") != "node-b,node-c" {
+		t.Fatalf("dsrc1 unconfigured = %v, want [node-b node-c]", got)
+	}
+	// dsrc2's lone node has no block → unconfigured
+	if got := unconfiguredNodes(d, d.Find("cluster", "name", "dsrc2")); strings.Join(got, ",") != "node-d" {
+		t.Fatalf("dsrc2 unconfigured = %v", got)
+	}
+}
+
+func TestArrayMembers(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{`["a", "b", "c"]`, "a,b,c"},
+		{`[ 'x' , "y" ]`, "x,y"},
+		{`[]`, ""},
+		{`["only"]`, "only"},
+	} {
+		if got := strings.Join(arrayMembers(c.in), ","); got != c.want {
+			t.Errorf("arrayMembers(%q) = %q want %q", c.in, got, c.want)
+		}
+	}
+}

@@ -251,9 +251,57 @@ func buildTree(doc *tomledit.Doc) ([]render.EditorNode, map[string]target) {
 			}
 			kids = append(kids, render.EditorNode{Label: nname, Hue: render.HueLoc, Children: nkids})
 		}
+		// Nodes listed in `nodes` but with no [[cluster.node]] block: surface them as
+		// unconfigured so the gap is visible. They resolve entirely to cluster defaults
+		// until given a block; -i creates one (v2a).
+		for _, nm := range unconfiguredNodes(doc, ci) {
+			kids = append(kids, render.EditorNode{
+				Label: nm + render.Glyph("  · ", "  * ") + "unconfigured (inherits " + cname + ")",
+				Key:   nm,
+				Hue:   render.HueDim,
+			})
+		}
 		root = append(root, render.EditorNode{Label: "[[cluster]] " + cname, Key: cname, Hue: render.HueLoc, Children: kids})
 	}
 	return root, targets
+}
+
+// unconfiguredNodes returns cluster ci's `nodes`-array members that have no [[cluster.node]]
+// block — the machines listed but never given per-node config, which resolve wholly to the
+// cluster's defaults. Order follows the `nodes` array.
+func unconfiguredNodes(doc *tomledit.Doc, ci int) []string {
+	nodesRaw, ok := doc.Value(ci, "nodes")
+	if !ok {
+		return nil
+	}
+	configured := map[string]bool{}
+	for _, ni := range doc.Tables("cluster.node") {
+		if doc.Owner(ni) == ci {
+			configured[tableValue(doc, ni, "name")] = true
+		}
+	}
+	var out []string
+	for _, nm := range arrayMembers(nodesRaw) {
+		if !configured[nm] {
+			out = append(out, nm)
+		}
+	}
+	return out
+}
+
+// arrayMembers parses a single-line TOML string array (`["a", "b"]`) into its members —
+// enough for the config's flat name arrays (nodes, decommissioned, fleet), not a general
+// TOML array parser.
+func arrayMembers(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimSuffix(strings.TrimPrefix(raw, "["), "]")
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		if s := tomledit.Unquote(strings.TrimSpace(p)); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // tableValue is a table's key as plain text ("" when unset) — used for the name that labels
