@@ -139,6 +139,79 @@ func (d *Doc) insert(i int, key, raw string) {
 	d.shift(at)
 }
 
+// InsertTable adds a new [[header]] array-table nested under owner (e.g. a [[cluster.node]]
+// under its [[cluster]]), seeded with the given key/value lines, and returns its index for
+// further Set calls. It lands after owner's existing child tables — before the blank that
+// separates the cluster from the next — indented to match its siblings, and preceded by a
+// blank line. raw values are inserted verbatim (quote strings yourself). The document is
+// re-parsed, so indices at or after the insertion move; owner (which precedes it) is stable.
+func (d *Doc) InsertTable(owner int, header string, seed [][2]string) int {
+	at := d.insertPoint(owner)
+	indent := d.childIndent(owner)
+	block := []string{"", indent + "[[" + header + "]]"}
+	for _, kv := range seed {
+		block = append(block, indent+kv[0]+" = "+kv[1])
+	}
+	d.lines = append(d.lines[:at:at], append(block, d.lines[at:]...)...)
+	*d = *Parse(d.String())
+	// the new block is owner's child with the greatest start — the one just appended
+	newIdx := -1
+	for j := range d.tables {
+		if d.Owner(j) == owner && d.tables[j].header == header &&
+			(newIdx == -1 || d.tables[j].start > d.tables[newIdx].start) {
+			newIdx = j
+		}
+	}
+	return newIdx
+}
+
+// DeleteTable removes table i and its lines entirely — the node block dropped when a
+// machine is decommissioned. A single blank line immediately above it goes too, so the
+// removal doesn't leave a double gap. The root table is never deleted. Re-parses.
+func (d *Doc) DeleteTable(i int) {
+	t := d.tables[i]
+	if t.header == "" {
+		return
+	}
+	// the span already runs to the next header, so it carries the block's trailing blank —
+	// removing [start,end) leaves the PREVIOUS block's blank as the separator.
+	d.lines = append(d.lines[:t.start], d.lines[t.end:]...)
+	// belt: if that seam now has two adjacent blanks (block had blanks on both sides and
+	// no trailing one in-span), drop one.
+	if t.start > 0 && t.start < len(d.lines) &&
+		strings.TrimSpace(d.lines[t.start-1]) == "" && strings.TrimSpace(d.lines[t.start]) == "" {
+		d.lines = append(d.lines[:t.start], d.lines[t.start+1:]...)
+	}
+	*d = *Parse(d.String())
+}
+
+// insertPoint is the line a new child table for owner should go at: past owner's own body
+// and all its child tables, then backed up over trailing blank lines so the block joins the
+// cluster's group rather than landing after the blank that precedes the next cluster.
+func (d *Doc) insertPoint(owner int) int {
+	end := d.tables[owner].end
+	for j := range d.tables {
+		if d.Owner(j) == owner && d.tables[j].end > end {
+			end = d.tables[j].end
+		}
+	}
+	for end > 0 && strings.TrimSpace(d.lines[end-1]) == "" {
+		end--
+	}
+	return end
+}
+
+// childIndent is the indent a new child of owner should use: matched from an existing child
+// if the cluster already has one, else two spaces (the house nesting for node blocks).
+func (d *Doc) childIndent(owner int) string {
+	for j := range d.tables {
+		if d.Owner(j) == owner {
+			return leadingSpace(d.lines[d.tables[j].start])
+		}
+	}
+	return "  "
+}
+
 // shift moves every span at or below an inserted line down one, so the table index the
 // caller holds keeps pointing at the same table after an edit.
 func (d *Doc) shift(at int) {

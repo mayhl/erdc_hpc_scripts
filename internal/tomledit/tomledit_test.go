@@ -149,3 +149,67 @@ func TestSplitComment(t *testing.T) {
 		}
 	}
 }
+
+// clusterDoc mirrors the config.toml cluster shape (placeholder names only): a cluster with
+// two indented node blocks, separated by blanks, then a second cluster.
+const clusterDoc = `[[cluster]]
+name  = "dsrc1"
+nodes = ["node-a", "node-b", "node-c"]
+
+  [[cluster.node]]
+  name    = "node-a"
+  account = "ACCT00000000"
+
+  [[cluster.node]]
+  name    = "node-b"
+  account = "ACCT00000000"
+
+[[cluster]]
+name = "dsrc2"
+`
+
+func TestInsertTable(t *testing.T) {
+	d := Parse(clusterDoc)
+	c1 := d.Find("cluster", "name", "dsrc1")
+	i := d.InsertTable(c1, "cluster.node", [][2]string{{"name", `"node-c"`}})
+	d.Set(i, "account", `"ACCT00000000"`)
+
+	got := d.String()
+	// the new block lands inside the dsrc1 group (after node-b, before the blank + dsrc2),
+	// two-space indented like its siblings
+	if !strings.Contains(got, "  name    = \"node-b\"\n  account = \"ACCT00000000\"\n\n  [[cluster.node]]\n  name = \"node-c\"") {
+		t.Fatalf("misplaced/misindented insert:\n%s", got)
+	}
+	if strings.Contains(got, "[[cluster.node]]\nname = \"node-c\"") { // must NOT be at column 0
+		t.Fatalf("insert not indented:\n%s", got)
+	}
+	// dsrc2 is untouched and still parses as its own cluster
+	if d.Find("cluster", "name", "dsrc2") < 0 {
+		t.Fatalf("dsrc2 lost after insert:\n%s", got)
+	}
+	// the returned index addresses the new block
+	if v, ok := d.Value(i, "name"); !ok || Unquote(v) != "node-c" {
+		t.Fatalf("returned index wrong: %q,%v", v, ok)
+	}
+}
+
+func TestDeleteTable(t *testing.T) {
+	d := Parse(clusterDoc)
+	nb := d.Find("cluster.node", "name", "node-b")
+	d.DeleteTable(nb)
+	got := d.String()
+	// the node-b BLOCK is gone (its name stays in the nodes array — decommission moves that
+	// separately); node-a + dsrc2 survive, one blank separator remains
+	if d.Find("cluster.node", "name", "node-b") >= 0 {
+		t.Fatalf("node-b block not removed:\n%s", got)
+	}
+	if d.Find("cluster.node", "name", "node-a") < 0 || d.Find("cluster", "name", "dsrc2") < 0 {
+		t.Fatalf("collateral damage:\n%s", got)
+	}
+	if !strings.Contains(got, "account = \"ACCT00000000\"\n\n[[cluster]]\nname = \"dsrc2\"") {
+		t.Fatalf("separator collapsed after delete:\n%s", got)
+	}
+	if strings.Contains(got, "\n\n\n") {
+		t.Fatalf("double blank left after delete:\n%s", got)
+	}
+}
