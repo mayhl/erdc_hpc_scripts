@@ -39,7 +39,7 @@ func send(e *collEditor, keys ...string) {
 
 func TestCollList(t *testing.T) {
 	// parse an existing literal, delete the first item, add a new one, done.
-	e := newCollEditor(FieldList, "nodes", `["node-a", "node-b"]`)
+	e := newCollEditor(FieldList, "nodes", `["node-a", "node-b"]`, nil)
 	if len(e.rows) != 2 || e.rows[0].val != "node-a" {
 		t.Fatalf("parse: %+v", e.rows)
 	}
@@ -56,13 +56,13 @@ func TestCollList(t *testing.T) {
 
 func TestCollListEmptyClears(t *testing.T) {
 	// deleting every item serializes to "" so the leaf reads as unset, not `[]`.
-	e := newCollEditor(FieldList, "nodes", `["only"]`)
+	e := newCollEditor(FieldList, "nodes", `["only"]`, nil)
 	send(e, "d", "f2")
 	if got := e.literal(); got != "" {
 		t.Fatalf("empty list literal = %q, want empty", got)
 	}
 	// an unset leaf opened and closed untouched is also "".
-	e2 := newCollEditor(FieldList, "nodes", "")
+	e2 := newCollEditor(FieldList, "nodes", "", nil)
 	send(e2, "f2")
 	if got := e2.literal(); got != "" {
 		t.Fatalf("untouched-unset literal = %q, want empty", got)
@@ -70,7 +70,7 @@ func TestCollListEmptyClears(t *testing.T) {
 }
 
 func TestCollMap(t *testing.T) {
-	e := newCollEditor(FieldMap, "submit_queue", `{ default = "standard", debug = "debug" }`)
+	e := newCollEditor(FieldMap, "submit_queue", `{ default = "standard", debug = "debug" }`, nil)
 	if len(e.rows) != 2 || e.rows[1].key != "debug" || e.rows[1].val != "debug" {
 		t.Fatalf("parse: %+v", e.rows)
 	}
@@ -86,7 +86,7 @@ func TestCollMap(t *testing.T) {
 }
 
 func TestCollMapAddPair(t *testing.T) {
-	e := newCollEditor(FieldMap, "queue_class", "")
+	e := newCollEditor(FieldMap, "queue_class", "", nil)
 	// navigate to the add row and add a pair: key then value across the two columns.
 	send(e, "a")              // add row, lands editing the key cell
 	send(e, "s", "t", "d")    // key = "std"
@@ -100,11 +100,38 @@ func TestCollMapAddPair(t *testing.T) {
 }
 
 func TestCollCancel(t *testing.T) {
-	e := newCollEditor(FieldList, "nodes", `["a"]`)
+	e := newCollEditor(FieldList, "nodes", `["a"]`, nil)
 	send(e, "d")   // would empty it...
 	send(e, "esc") // ...but cancel discards
 	if !e.cancel || e.done {
 		t.Fatalf("cancel=%v done=%v", e.cancel, e.done)
+	}
+}
+
+func TestCollSet(t *testing.T) {
+	// universe of four machines, two currently in the fleet; toggle one off and one on.
+	uni := []string{"n1", "n2", "n3", "n4"}
+	e := newCollEditor(FieldSet, "fleet", `["n1", "n3"]`, uni)
+	if len(e.rows) != 4 || !e.rows[0].on || e.rows[1].on || !e.rows[2].on {
+		t.Fatalf("seed: %+v", e.rows)
+	}
+	send(e, " ")         // toggle n1 off (cursor row 0)
+	send(e, "down", " ") // toggle n2 on (row 1)
+	send(e, "f2")
+	if got := e.literal(); got != `["n2", "n3"]` {
+		t.Fatalf("literal = %q", got)
+	}
+}
+
+func TestCollSetKeepsUnknownMember(t *testing.T) {
+	// a fleet member no longer in any cluster still shows, checked, so it isn't silently lost.
+	e := newCollEditor(FieldSet, "fleet", `["n1", "ghost"]`, []string{"n1", "n2"})
+	if len(e.rows) != 3 || e.rows[2].val != "ghost" || !e.rows[2].on {
+		t.Fatalf("ghost not preserved: %+v", e.rows)
+	}
+	send(e, "f2")
+	if got := e.literal(); got != `["n1", "ghost"]` {
+		t.Fatalf("literal = %q", got)
 	}
 }
 

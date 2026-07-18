@@ -1,6 +1,10 @@
 package render
 
-import "testing"
+import (
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+)
 
 // tree builds a two-cluster spec: sections nesting sections nesting leaves — the shape
 // config actually has (cluster → node → keys).
@@ -79,6 +83,36 @@ func TestChanges(t *testing.T) {
 	}
 	if !samePath(c.Path, []string{"dsrc1", "node-a", "account"}) {
 		t.Errorf("path = %v, want the full path from the root", c.Path)
+	}
+}
+
+// TestSectionAction: ctrl+x arms a section's structural action, reported by path on save;
+// an unarmed panel reports none, and a leaf (no action) ignores the key.
+func TestSectionAction(t *testing.T) {
+	spec := tree()
+	spec.Root[1].Children[1].Action = "decommission" // the node-a section
+	m := newEditorModel(spec)
+	if len(m.actions()) != 0 {
+		t.Fatal("unarmed panel already reports an action")
+	}
+	// row 3 is node-a (hpc_user, dsrc1, scheduler, node-a, account).
+	if m.rows[3].label != "node-a" {
+		t.Fatalf("row 3 = %q, want node-a", m.rows[3].label)
+	}
+	m.cursor = 3
+	nm, _ := m.Update(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	m = nm.(editorModel)
+	got := m.actions()
+	if len(got) != 1 || got[0].Label != "decommission" {
+		t.Fatalf("actions = %+v, want one decommission", got)
+	}
+	if !samePath(got[0].Path, []string{"dsrc1", "node-a"}) {
+		t.Errorf("path = %v", got[0].Path)
+	}
+	// arming again disarms it.
+	nm, _ = m.Update(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if len(nm.(editorModel).actions()) != 0 {
+		t.Error("ctrl+x did not toggle off")
 	}
 }
 

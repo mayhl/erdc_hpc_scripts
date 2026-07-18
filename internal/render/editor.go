@@ -7,6 +7,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+// actionKey arms a section's structural command (ctrl+x — a guarded chord, since the action
+// rewrites structure, not just a value).
+const actionKey = "ctrl+x"
+
 // EditorNode is one row of the Editor's tree: a SECTION when it has Children and no Field,
 // a LEAF when it carries a Field. Domain-free — the caller builds the tree and reads the
 // Changes back out; the widget knows nothing about config.
@@ -23,9 +27,25 @@ type EditorNode struct {
 	// Hue is the palette hue of a SECTION's heading (HueLoc, HueGroup, …), letting the
 	// caller tier its own hierarchy without the widget knowing what a cluster is. "" → the
 	// house header hue. Warm hues are status-reserved — don't pass them.
-	Hue      string
+	Hue string
+	// Action, when set on a SECTION, is a structural command the caller offers on it: ctrl+x
+	// marks the section (the label names it, e.g. "decommission"), and Editor returns the
+	// marked sections' paths in Actions on save for the caller to run. The widget stays
+	// domain-free — it never performs the action, only reports the intent, like Changes.
+	Action   string
 	Children []EditorNode
 }
+
+// Action is one section the user marked for its structural command (its path from the root
+// and the command's label). Returned alongside Changes so the caller can run the domain
+// operation — dropping a node's block, say — that the tree can't express as a leaf edit.
+type Action struct {
+	Path  []string
+	Label string
+}
+
+// isCollection reports the field kinds edited in the focused sub-panel rather than in place.
+func isCollection(k FieldKind) bool { return k == FieldList || k == FieldMap || k == FieldSet }
 
 // EditorSpec configures the panel: a titled tree whose leaves are edited in place with the
 // same field editors as Form.
@@ -59,20 +79,21 @@ type Change struct {
 	Old, New string
 }
 
-// Editor runs the interactive panel and returns the changed leaves and whether the user
-// saved (false = cancelled). Like Select and Form it is a SELECTOR, not an actuator: it
-// returns an intent and never touches disk — the caller renders the diff, confirms, and
-// writes. Save is refused while any leaf is invalid (the cursor jumps to the offender).
-func Editor(spec EditorSpec) ([]Change, bool, error) {
+// Editor runs the interactive panel and returns the changed leaves, the sections the user
+// marked for their structural action, and whether the user saved (false = cancelled). Like
+// Select and Form it is a SELECTOR, not an actuator: it returns intent and never touches disk
+// — the caller renders the diff, confirms, and writes. Save is refused while any leaf is
+// invalid (the cursor jumps to the offender).
+func Editor(spec EditorSpec) ([]Change, []Action, bool, error) {
 	res, err := tea.NewProgram(newEditorModel(spec)).Run()
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	m := res.(editorModel)
 	if !m.saved {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
-	return m.changes(), true, nil
+	return m.changes(), m.actions(), true, nil
 }
 
 // edRow is the tree flattened once at open: rendering and navigation both walk this slice,
@@ -88,7 +109,9 @@ type edRow struct {
 	orig     string // value at open, for the Change diff
 	err      string
 	expanded bool
-	kids     int // number of DESCENDANT rows (the whole subtree), for collapse skipping
+	kids     int    // number of DESCENDANT rows (the whole subtree), for collapse skipping
+	action   string // a section's structural command label ("" → none), from EditorNode.Action
+	marked   bool   // the user armed this section's action (ctrl+x); applied on save
 }
 
 type editorModel struct {
@@ -193,7 +216,7 @@ func flatten(nodes []EditorNode, depth int, prefix []string, expanded bool) []ed
 			key = n.Label
 		}
 		path := append(append([]string(nil), prefix...), key)
-		row := edRow{label: n.Label, depth: depth, path: path, origin: n.Origin, hue: n.Hue, expanded: expanded}
+		row := edRow{label: n.Label, depth: depth, path: path, origin: n.Origin, hue: n.Hue, action: n.Action, expanded: expanded}
 		if n.Field != nil {
 			f := *n.Field // copy: the widget edits its own state, never the caller's spec
 			row.field = &f
@@ -266,6 +289,11 @@ func (m editorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = m.firstVisible()
 		case "end":
 			m.lastVisible()
+		case actionKey:
+			// Arm/disarm this section's structural action (a leaf has none). Applied on save.
+			if r := &m.rows[m.cursor]; r.action != "" {
+				r.marked = !r.marked
+			}
 		case "enter", "right", "left", " ", "space":
 			// On a section these fold; on a leaf the same keys belong to the field editor
 			// (an enum cycles with ←/→/space), so only sections consume them.
@@ -281,11 +309,11 @@ func (m editorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.clampScroll() // a fold resizes the list under the window
 				return m, nil
 			}
-			// A list/map leaf opens its focused sub-editor on enter/→; ←/space do nothing on it
-			// (there is no scalar to cycle or type in place).
-			if f := m.rows[m.cursor].field; f.Kind == FieldList || f.Kind == FieldMap {
+			// A list/map/set leaf opens its focused sub-editor on enter/→; ←/space do nothing on
+			// it (there is no scalar to cycle or type in place).
+			if f := m.rows[m.cursor].field; isCollection(f.Kind) {
 				if key == "enter" || key == "right" {
-					m.sub = newCollEditor(f.Kind, f.Label, f.Value)
+					m.sub = newCollEditor(f.Kind, f.Label, f.Value, f.Options)
 				}
 				return m, nil
 			}
@@ -482,6 +510,17 @@ func (m editorModel) changes() []Change {
 	return out
 }
 
+// actions reports the sections the user armed for their structural command.
+func (m editorModel) actions() []Action {
+	var out []Action
+	for _, r := range m.rows {
+		if r.marked && r.action != "" {
+			out = append(out, Action{Path: r.path, Label: r.action})
+		}
+	}
+	return out
+}
+
 func (m editorModel) View() tea.View {
 	if m.sub != nil { // the sub-editor takes the whole panel while it's open
 		return tea.NewView(m.sub.view(m.spec.Title))
@@ -508,7 +547,14 @@ func (m editorModel) View() tea.View {
 			if r.hue != "" {
 				head = lg(r.hue).Bold(true)
 			}
-			lines = append(lines, cursorGlyph(cur)+" "+indent+head.Render(fold+r.label))
+			line := cursorGlyph(cur) + " " + indent + head.Render(fold+r.label)
+			switch {
+			case r.marked: // armed — the caller will run this on save
+				line += "  " + formErr.Render(glyph("→ ", "-> ")+r.action)
+			case cur && r.action != "": // offer it while the cursor is here
+				line += "  " + selFoot.Render(actionKey+" "+r.action)
+			}
+			lines = append(lines, line)
 			continue
 		}
 		// An UNSET leaf is dim and shows a dash: an empty cell and a real empty string look

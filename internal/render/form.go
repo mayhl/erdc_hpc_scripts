@@ -15,8 +15,9 @@ type FieldKind int
 const (
 	FieldText FieldKind = iota
 	FieldEnum
-	FieldList // ["a", "b"] — edited as a list of strings
+	FieldList // ["a", "b"] — edited as a free list of strings
 	FieldMap  // { k = "v" } — edited as key = value pairs
+	FieldSet  // ["a", "b"] — a subset toggled out of Options (a fixed universe)
 )
 
 // FormField is one editable field of a Form. Domain-free — the caller maps values

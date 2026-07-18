@@ -58,6 +58,12 @@ func mapKey(name, hint string) cfgKey {
 	return cfgKey{name: name, kind: render.FieldMap, hint: hint, validate: mapField}
 }
 
+// setKey is an array edited as a TOGGLE-SET out of a fixed universe (fleet, whose candidates
+// are every live cluster node) — options are filled in buildTree, where the document is known.
+func setKey(name, hint string) cfgKey {
+	return cfgKey{name: name, kind: render.FieldSet, hint: hint, validate: arrayField}
+}
+
 // arrayField / mapField loosely check the literal's shape so a fat-fingered edit is caught
 // in the panel, not as a parse failure on next load. Empty clears the key.
 func arrayField(v string, _ []string) string {
@@ -91,7 +97,7 @@ func intOrEmpty(v string, _ []string) string {
 var (
 	rootKeys = []cfgKey{
 		strKey("hpc_user", "HPC login name"),
-		arrKey("fleet", `--fleet query set: ["a", "b"]`),
+		setKey("fleet", "--fleet query set (toggle cluster machines)"),
 	}
 
 	tableKeys = map[string][]cfgKey{
@@ -272,7 +278,9 @@ func buildTree(doc *tomledit.Doc, showAll bool) ([]render.EditorNode, map[string
 		if ni < 0 {
 			label, h = nname+render.Glyph("  · ", "  * ")+"unconfigured", render.HueDim
 		}
-		return render.EditorNode{Label: label, Key: nname, Hue: h, Children: nkids}
+		// A live node (configured or not) can be retired in place with ctrl+x — the same
+		// operation as `mu config --decommission`, applied on save.
+		return render.EditorNode{Label: label, Key: nname, Hue: h, Action: "decommission", Children: nkids}
 	}
 
 	// Root scalars (hpc_user) live at the TOML top level, not under a [table], but a lone
@@ -281,6 +289,9 @@ func buildTree(doc *tomledit.Doc, showAll bool) ([]render.EditorNode, map[string
 	// section's Key keeps its decorated label out of the leaf paths (see the leaf-path fix).
 	var general []render.EditorNode
 	for _, k := range rootKeys {
+		if k.name == "fleet" { // its universe is every live cluster machine
+			k.options = allNodes(doc)
+		}
 		v, origin := value(0, k)
 		general = append(general, leaf([]string{"general", k.name}, target{table: 0, key: k.name, quoted: k.quoted}, k, v, origin))
 	}
@@ -335,6 +346,38 @@ func buildTree(doc *tomledit.Doc, showAll bool) ([]render.EditorNode, map[string
 		root = append(root, render.EditorNode{Label: "[[cluster]] " + cname, Key: cname, Hue: render.HueLoc, Children: kids})
 	}
 	return root, targets
+}
+
+// allNodes is every live machine across all clusters — each cluster's configured
+// [[cluster.node]] blocks plus its `nodes`-array members, minus anything decommissioned. It's
+// the universe the fleet toggle-set draws from, in cluster-then-listing order, deduped.
+func allNodes(doc *tomledit.Doc) []string {
+	seen, dead := map[string]bool{}, map[string]bool{}
+	var out []string
+	for _, ci := range doc.Tables("cluster") {
+		for _, nm := range decommissionedNodes(doc, ci) {
+			dead[nm] = true
+		}
+	}
+	add := func(nm string) {
+		if nm != "" && !seen[nm] && !dead[nm] {
+			seen[nm] = true
+			out = append(out, nm)
+		}
+	}
+	for _, ci := range doc.Tables("cluster") {
+		for _, ni := range doc.Tables("cluster.node") {
+			if doc.Owner(ni) == ci {
+				add(tableValue(doc, ni, "name"))
+			}
+		}
+		if raw, ok := doc.Value(ci, "nodes"); ok {
+			for _, nm := range arrayMembers(raw) {
+				add(nm)
+			}
+		}
+	}
+	return out
 }
 
 // unconfiguredNodes returns cluster ci's `nodes`-array members that have no [[cluster.node]]
@@ -491,7 +534,9 @@ func printTree(nodes []render.EditorNode, depth int) {
 }
 
 // configEdit opens the panel, then applies whatever changed as a surgical patch: diff,
-// confirm, back up, write.
+// confirm, back up, write. A structural action (decommission) reshapes the tree, so after
+// writing one the panel REOPENS on the reloaded file — the retired node now shows in its new
+// place (the decommissioned list, or gone), rather than lingering until the next invocation.
 func configEdit(showAll bool) error {
 	path, old, doc, err := configDoc()
 	if err != nil {
@@ -505,38 +550,62 @@ func configEdit(showAll bool) error {
 		render.Warn("this machine's config.toml is a replica — a later `mu setup sync` from your laptop overwrites it (pull it back with `mu setup sync pull`)")
 	}
 
-	root, targets := buildTree(doc, showAll)
-	changes, saved, err := render.Editor(render.EditorSpec{
-		Title:     "config " + path,
-		Root:      root,
-		Collapsed: true, // a config tree is deep — open on the headings, expand into what you want
-	})
-	if err != nil {
-		return runErr("%s", err)
+	wrote := false
+	for {
+		root, targets := buildTree(doc, showAll)
+		changes, actions, saved, err := render.Editor(render.EditorSpec{
+			Title:     "config " + path,
+			Root:      root,
+			Collapsed: true, // a config tree is deep — open on the headings, expand into what you want
+		})
+		if err != nil {
+			return runErr("%s", err)
+		}
+		if !saved || (len(changes) == 0 && len(actions) == 0) {
+			if !wrote { // a bare esc on a reopened panel isn't "no changes" — we already wrote
+				render.Info("no changes")
+			}
+			return nil
+		}
+		// Scalar edits first (valid table indices), then the structural actions —
+		// decommissionNode re-parses and re-resolves by name, so it must run after the
+		// index-based Sets.
+		applyChanges(doc, targets, changes)
+		for _, a := range actions {
+			if a.Label == "decommission" {
+				decommissionNode(doc, a.Path[len(a.Path)-1])
+			}
+		}
+		merged := doc.String()
+		if merged == old {
+			if !wrote {
+				render.Info("no changes")
+			}
+			return nil
+		}
+		showConfigDiff(old, merged)
+		fmt.Fprintf(os.Stderr, "write %d change(s) to %s? [y/N] ", len(changes)+len(actions), path)
+		var r string
+		_, _ = fmt.Scanln(&r)
+		if strings.ToLower(strings.TrimSpace(r)) != "y" {
+			render.Info("aborted")
+			return nil
+		}
+		if err := writeLocalConfig(path, []byte(old), merged); err != nil {
+			return runErr("%s", err)
+		}
+		render.OK(fmt.Sprintf("wrote %s (backup: %s.bak)", path, path))
+		wrote = true
+		// Scalar-only edit: the values already read back as typed, nothing to re-review.
+		if len(actions) == 0 {
+			return nil
+		}
+		// A node moved — reload from disk and reopen so the refreshed tree is what you see.
+		if _, old, doc, err = configDoc(); err != nil {
+			return err
+		}
+		render.Info("reloaded — reopening with the updated systems")
 	}
-	if !saved || len(changes) == 0 {
-		render.Info("no changes")
-		return nil
-	}
-	applyChanges(doc, targets, changes)
-	merged := doc.String()
-	if merged == old {
-		render.Info("no changes")
-		return nil
-	}
-	showConfigDiff(old, merged)
-	fmt.Fprintf(os.Stderr, "write %d change(s) to %s? [y/N] ", len(changes), path)
-	var r string
-	_, _ = fmt.Scanln(&r)
-	if strings.ToLower(strings.TrimSpace(r)) != "y" {
-		render.Info("aborted")
-		return nil
-	}
-	if err := writeLocalConfig(path, []byte(old), merged); err != nil {
-		return runErr("%s", err)
-	}
-	render.OK(fmt.Sprintf("wrote %s (backup: %s.bak)", path, path))
-	return nil
 }
 
 // configDecommission retires a machine non-interactively: decommissionNode edits the doc,
