@@ -249,3 +249,39 @@ func TestCollectRuns(t *testing.T) {
 		t.Errorf("second: %+v", runs[1])
 	}
 }
+
+// TestArchiveMaster covers the archive-master marker round trip: unset reads not-ok, a set
+// value reads back, clear removes it, and a marker with only comments is a malformed error.
+func TestArchiveMaster(t *testing.T) {
+	root, _ := repo(t)
+
+	if _, ok, err := ArchiveMaster(root); err != nil || ok {
+		t.Fatalf("unset: ok=%v err=%v, want ok=false nil", ok, err)
+	}
+
+	if err := SetArchiveMaster(root, "hpc1"); err != nil {
+		t.Fatal(err)
+	}
+	node, ok, err := ArchiveMaster(root)
+	if err != nil || !ok || node != "hpc1" {
+		t.Fatalf("after set: (%q, %v, %v), want (hpc1, true, nil)", node, ok, err)
+	}
+
+	// A comment-only marker names no node — a malformed marker, not silently unset.
+	if err := os.WriteFile(filepath.Join(root, ArchiveFile), []byte("# only a comment\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ArchiveMaster(root); err == nil {
+		t.Error("comment-only marker: want an error")
+	}
+
+	if err := ClearArchiveMaster(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := ArchiveMaster(root); ok {
+		t.Error("after clear: want unset")
+	}
+	if err := ClearArchiveMaster(root); err != nil {
+		t.Errorf("clear when absent should be a no-op, got %v", err)
+	}
+}

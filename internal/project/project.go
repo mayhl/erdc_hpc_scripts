@@ -34,6 +34,14 @@ const AffinityFile = ".mu-node"
 // node token per line; blank lines and # comments skipped.
 const FleetFile = ".mu-fleet"
 
+// ArchiveFile names the project's designated archive-master node — the single cluster
+// whose per-cluster HSM ($ARCHIVE) is the project's archive source-of-truth. A cross-
+// cluster project has a separate archive on each DSRC, so archiving from every cluster
+// would scatter and duplicate the project's archived data; the marker picks one. Project-
+// root only (not walked up like AffinityFile), one node token, blank/# lines skipped —
+// DECLARED intent, warned on when `mu archive` runs from a different cluster.
+const ArchiveFile = ".mu-archive"
+
 // FindRoot walks up from path to the enclosing git repo root — the project root
 // per the structure contract (no project.toml marker until the sim manager needs
 // one).
@@ -184,6 +192,45 @@ func readFleetFile(path string) (nodes []string, found bool, err error) {
 	}
 	sort.Strings(nodes)
 	return nodes, true, nil
+}
+
+// ArchiveMaster reads the project's designated archive-master node from the root
+// ArchiveFile. ok=false when no marker is set (archiving is then unguarded — a single-
+// cluster project needs no master); an error when the file exists but names no node (a
+// malformed marker we refuse to treat as unset, same as the other markers).
+func ArchiveMaster(root string) (node string, ok bool, err error) {
+	path := filepath.Join(root, ArchiveFile)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if line = strings.TrimSpace(line); line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return line, true, nil
+	}
+	return "", false, fmt.Errorf("%s declares no node", path)
+}
+
+// SetArchiveMaster writes node as the project's archive master, overwriting any existing
+// marker. The marker is a tracked declaration of intent, so it is written deliberately (by
+// `mu project archive-master`), never as a sync side effect.
+func SetArchiveMaster(root, node string) error {
+	body := "# mu archive-master — the cluster this project archives from (single HSM source-of-truth).\n" + node + "\n"
+	return os.WriteFile(filepath.Join(root, ArchiveFile), []byte(body), 0o644)
+}
+
+// ClearArchiveMaster removes the archive-master marker; a no-op (nil) when none is set.
+func ClearArchiveMaster(root string) error {
+	err := os.Remove(filepath.Join(root, ArchiveFile))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 // HomeRel names path in the shared relative namespace: its path relative to
