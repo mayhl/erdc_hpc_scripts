@@ -14,10 +14,10 @@ import (
 	"github.com/mayhl/mayhl_utils/internal/tomledit"
 )
 
-// cfgKey is one editable scalar of the config schema: how it's entered, how it's checked,
-// and whether TOML wants it quoted. Maps (submit_queue, queue_class) and arrays (fleet) are
-// deliberately absent — v1 edits values, not structure, and an inline table reads better in
-// the file than through a panel.
+// cfgKey is one editable field of the config schema: how it's entered, how it's checked, and
+// whether TOML wants it quoted. Scalars, plus (v2) whole arrays (fleet, nodes,
+// decommissioned) and inline tables (submit_queue, queue_class) edited as their raw literal
+// via arrKey/mapKey — a dedicated list/map widget is a later polish.
 type cfgKey struct {
 	name     string
 	kind     render.FieldKind
@@ -45,6 +45,34 @@ func enumKey(name string, options []string) cfgKey {
 	return cfgKey{name: name, kind: render.FieldEnum, options: options, quoted: true}
 }
 
+// arrKey / mapKey edit a whole TOML array (fleet, nodes, decommissioned) or inline table
+// (submit_queue, queue_class) as its raw text — quoted:false, since the value the user types
+// IS the literal. A dedicated in-panel list/map widget is a later polish; this makes the
+// structure editable now (and surfaces fleet, which used to be a hand-edit-only key).
+func arrKey(name, hint string) cfgKey {
+	return cfgKey{name: name, kind: render.FieldText, hint: hint, validate: arrayField}
+}
+
+func mapKey(name, hint string) cfgKey {
+	return cfgKey{name: name, kind: render.FieldText, hint: hint, validate: mapField}
+}
+
+// arrayField / mapField loosely check the literal's shape so a fat-fingered edit is caught
+// in the panel, not as a parse failure on next load. Empty clears the key.
+func arrayField(v string, _ []string) string {
+	if s := strings.TrimSpace(v); s != "" && (!strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]")) {
+		return `a TOML array: ["a", "b"]`
+	}
+	return ""
+}
+
+func mapField(v string, _ []string) string {
+	if s := strings.TrimSpace(v); s != "" && (!strings.HasPrefix(s, "{") || !strings.HasSuffix(s, "}")) {
+		return `an inline table: { q = "name" }`
+	}
+	return ""
+}
+
 // intOrEmpty accepts a non-negative integer or nothing (clearing a key is a valid edit).
 func intOrEmpty(v string, _ []string) string {
 	if strings.TrimSpace(v) == "" {
@@ -60,7 +88,10 @@ func intOrEmpty(v string, _ []string) string {
 // creating a table (a new cluster or machine) stays a hand-edit, so the panel never has to
 // invent a block's placement or its comments.
 var (
-	rootKeys = []cfgKey{strKey("hpc_user", "HPC login name")}
+	rootKeys = []cfgKey{
+		strKey("hpc_user", "HPC login name"),
+		arrKey("fleet", `--fleet query set: ["a", "b"]`),
+	}
 
 	tableKeys = map[string][]cfgKey{
 		"transfer": {strKey("rsync_opts", ""), strKey("ssh_transfer_opts", "")},
@@ -83,6 +114,10 @@ var (
 		enumKey("queue_flag", []string{"partition", "qos"}),
 		intKey("cores_per_node", "→ MaxNodes"),
 		{name: "active", kind: render.FieldEnum, options: []string{"true", "false"}},
+		arrKey("nodes", `machines: ["a", "b"]`),
+		arrKey("decommissioned", "retired machines (or use --decommission)"),
+		mapKey("submit_queue", `{ default = "standard", debug = "debug" }`),
+		mapKey("queue_class", `{ standard = "…" }`),
 	}
 
 	// A node inherits every one of these from its cluster, so each may be left blank.
@@ -92,6 +127,8 @@ var (
 		wallKey("interactive_walltime", "this machine's held session"),
 		enumKey("queue_flag", []string{"", "partition", "qos"}),
 		intKey("cores_per_node", "cores on THIS machine"),
+		mapKey("submit_queue", `this machine's { default = "…" }`),
+		mapKey("queue_class", `{ standard = "…" }`),
 	}
 )
 
