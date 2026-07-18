@@ -6,13 +6,17 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// FieldKind selects a form field's editor: free text, or an enum cycled through
-// fixed options.
+// FieldKind selects a form field's editor: free text, an enum cycled through fixed
+// options, or (Editor only) a string list / string map edited in a focused sub-panel.
+// A FieldList/FieldMap value stays the raw TOML literal in Value — the sub-editor only
+// parses it on entry and re-serializes on exit, so the caller's write-back is unchanged.
 type FieldKind int
 
 const (
 	FieldText FieldKind = iota
 	FieldEnum
+	FieldList // ["a", "b"] — edited as a list of strings
+	FieldMap  // { k = "v" } — edited as key = value pairs
 )
 
 // FormField is one editable field of a Form. Domain-free — the caller maps values

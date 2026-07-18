@@ -99,6 +99,9 @@ type editorModel struct {
 	height  int // terminal rows; a config tree outgrows a short window easily
 	loading bool
 	saved   bool
+	// sub is the focused list/map sub-editor over the cursor leaf while it is open: it owns
+	// every keystroke, and on done writes its re-serialized literal back into the leaf.
+	sub *collEditor
 }
 
 func newEditorModel(spec EditorSpec) editorModel {
@@ -230,6 +233,21 @@ func (m editorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampScroll()
 		return m, nil
 	case tea.KeyPressMsg:
+		// While a list/map sub-editor is open it swallows every key; when it finishes we
+		// either fold its literal back into the leaf (done) or drop it (cancel).
+		if m.sub != nil {
+			m.sub.update(msg)
+			switch {
+			case m.sub.done:
+				m.rows[m.cursor].field.Value = m.sub.literal()
+				m.validate(m.cursor)
+				m.sub = nil
+				m.clampScroll()
+			case m.sub.cancel:
+				m.sub = nil
+			}
+			return m, nil
+		}
 		switch key := msg.String(); key {
 		case "ctrl+c", "esc":
 			m.saved = false
@@ -261,6 +279,14 @@ func (m editorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					r.expanded = !r.expanded
 				}
 				m.clampScroll() // a fold resizes the list under the window
+				return m, nil
+			}
+			// A list/map leaf opens its focused sub-editor on enter/→; ←/space do nothing on it
+			// (there is no scalar to cycle or type in place).
+			if f := m.rows[m.cursor].field; f.Kind == FieldList || f.Kind == FieldMap {
+				if key == "enter" || key == "right" {
+					m.sub = newCollEditor(f.Kind, f.Label, f.Value)
+				}
 				return m, nil
 			}
 			m.edit(msg)
@@ -457,6 +483,9 @@ func (m editorModel) changes() []Change {
 }
 
 func (m editorModel) View() tea.View {
+	if m.sub != nil { // the sub-editor takes the whole panel while it's open
+		return tea.NewView(m.sub.view(m.spec.Title))
+	}
 	labelW := 0
 	for i, r := range m.rows {
 		if r.field != nil && m.visible(i) {
@@ -488,9 +517,12 @@ func (m editorModel) View() tea.View {
 		if strings.TrimSpace(val) == "" && !cur {
 			val, style = glyph("—", "--"), edUnset
 		}
+		coll := r.field.Kind == FieldList || r.field.Kind == FieldMap
 		switch {
 		case r.field.Kind == FieldEnum && cur:
 			val = glyph("‹ ", "< ") + val + glyph(" ›", " >")
+		case coll:
+			// no text bar — a collection leaf is opened, not typed into; the literal shows as-is
 		case cur:
 			val += glyph("▏", "|")
 		}
@@ -502,6 +534,9 @@ func (m editorModel) View() tea.View {
 			line += selRow.Render(val)
 		} else {
 			line += style.Render(val)
+		}
+		if coll && cur { // the affordance: this leaf opens a panel
+			line += "  " + selFoot.Render(glyph("↵ edit", "enter edit"))
 		}
 		// Provenance is why this panel beats the file: which scope a value came from is
 		// invisible in the TOML but decides what a lookup resolves to. The caller writes the

@@ -16,8 +16,8 @@ import (
 
 // cfgKey is one editable field of the config schema: how it's entered, how it's checked, and
 // whether TOML wants it quoted. Scalars, plus (v2) whole arrays (fleet, nodes,
-// decommissioned) and inline tables (submit_queue, queue_class) edited as their raw literal
-// via arrKey/mapKey — a dedicated list/map widget is a later polish.
+// decommissioned) and inline tables (submit_queue, queue_class) edited via arrKey/mapKey in
+// the Editor's focused list/map sub-panel.
 type cfgKey struct {
 	name     string
 	kind     render.FieldKind
@@ -46,15 +46,16 @@ func enumKey(name string, options []string) cfgKey {
 }
 
 // arrKey / mapKey edit a whole TOML array (fleet, nodes, decommissioned) or inline table
-// (submit_queue, queue_class) as its raw text — quoted:false, since the value the user types
-// IS the literal. A dedicated in-panel list/map widget is a later polish; this makes the
-// structure editable now (and surfaces fleet, which used to be a hand-edit-only key).
+// (submit_queue, queue_class) through the Editor's focused list/map sub-panel — quoted:false,
+// since the sub-editor re-serializes the literal itself and hands it back as Value. The shape
+// validators stay as a backstop (they run on that serialized literal, which is always
+// well-formed); this also surfaces fleet, which used to be a hand-edit-only key.
 func arrKey(name, hint string) cfgKey {
-	return cfgKey{name: name, kind: render.FieldText, hint: hint, validate: arrayField}
+	return cfgKey{name: name, kind: render.FieldList, hint: hint, validate: arrayField}
 }
 
 func mapKey(name, hint string) cfgKey {
-	return cfgKey{name: name, kind: render.FieldText, hint: hint, validate: mapField}
+	return cfgKey{name: name, kind: render.FieldMap, hint: hint, validate: mapField}
 }
 
 // arrayField / mapField loosely check the literal's shape so a fat-fingered edit is caught
