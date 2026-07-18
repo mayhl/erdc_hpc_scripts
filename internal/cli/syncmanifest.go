@@ -112,6 +112,39 @@ func writeManifest(target, root, node string, results []syncResult, o projSyncOp
 	}
 }
 
+// pruneManifest drops the given paths from a manifest, returning the trimmed record. The
+// mirror of mergeManifest for the delete side: prune removes files, so their provenance
+// entries go too, keeping the manifest honest about what is staged. Pure — the read/save
+// round trip lives in updatePruneManifest so this stays testable.
+func pruneManifest(existing syncManifest, deleted []string) syncManifest {
+	drop := make(map[string]bool, len(deleted))
+	for _, p := range deleted {
+		drop[p] = true
+	}
+	kept := make([]manifestFile, 0, len(existing.File))
+	for _, f := range existing.File {
+		if !drop[f.Path] {
+			kept = append(kept, f)
+		}
+	}
+	return syncManifest{File: kept}
+}
+
+// updatePruneManifest trims the pruned files' entries from a tier's remote manifest after a
+// successful delete. Advisory — the files are already gone, so a failure warns but never
+// fails the prune. A manifest emptied of every entry is still written (an empty file list),
+// not removed, so the tier keeps its provenance file.
+func updatePruneManifest(target, node, dest string, deleted []string) {
+	m := readManifest(target, dest)
+	if len(m.File) == 0 {
+		return // nothing recorded (pushed before manifests, or never) — nothing to trim
+	}
+	m = pruneManifest(m, deleted)
+	if err := saveManifest(target, dest, m); err != nil {
+		render.Warn(fmt.Sprintf("manifest: %s: %s (files pruned, manifest not updated)", node, err))
+	}
+}
+
 // readManifest fetches the tier's existing manifest, returning an empty one when it is
 // absent or unparseable — a first push has none, and a garbled file must not strand the
 // merge (the fresh entries still land, replacing it).

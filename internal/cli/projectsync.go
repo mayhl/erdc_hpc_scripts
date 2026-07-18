@@ -243,6 +243,7 @@ func projectSyncCmd() *cobra.Command {
 	}
 	c.AddCommand(projectSyncPullCmd())
 	c.AddCommand(projectSyncStatusCmd())
+	c.AddCommand(projectSyncPruneCmd())
 	return c
 }
 
