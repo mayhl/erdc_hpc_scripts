@@ -109,3 +109,40 @@ func TestCreateRooted(t *testing.T) {
 		t.Fatalf("round-trip content=%q err=%v", got, err)
 	}
 }
+
+func TestCreateRootedSubset(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "deep", "case_a_250")
+	if err := os.MkdirAll(filepath.Join(src, "output"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"output/a.nc", "output/b.nc", "log.out"} {
+		if err := os.WriteFile(filepath.Join(src, f), []byte(f), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// pack only the two output members — the log stays out of this chunk
+	staging := filepath.Join(base, "deep", "chunk.tar")
+	if rc := CreateRootedSubset(src, staging, []string{"output/a.nc", "output/b.nc"}); rc != 0 {
+		t.Fatalf("create rc=%d", rc)
+	}
+	out := filepath.Join(base, "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(staging, filepath.Join(out, "chunk.tar")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(out)
+	if rc := Run("chunk.tar", false); rc != 0 {
+		t.Fatalf("extract rc=%d", rc)
+	}
+	// the subset extracts rooted at the leaf basename — case_a_250/output/{a,b}.nc only
+	if got, err := os.ReadFile(filepath.Join(out, "case_a_250", "output", "a.nc")); err != nil || string(got) != "output/a.nc" {
+		t.Fatalf("member content=%q err=%v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "case_a_250", "log.out")); !os.IsNotExist(err) {
+		t.Fatalf("log.out should not be in the subset chunk (err=%v)", err)
+	}
+}

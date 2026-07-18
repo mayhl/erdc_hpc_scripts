@@ -54,6 +54,31 @@ func CreateRooted(dir, out string) int {
 	return createStream(dir, out, false, true)
 }
 
+// CreateRootedSubset archives a subset of dir's members into out, each rooted at dir's
+// basename (tar runs from the parent) — so the chunk tars split from one leaf all
+// extract back into the same dir. members are dir-relative paths; empty members packs
+// the whole dir (identical to CreateRooted).
+func CreateRootedSubset(dir, out string, members []string) int {
+	if len(members) == 0 {
+		return CreateRooted(dir, out)
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		render.Err("not a directory: " + dir)
+		return 1
+	}
+	base := filepath.Base(dir)
+	args := make([]string, len(members))
+	var total int64
+	for i, m := range members {
+		args[i] = filepath.Join(base, m) // root each member under the leaf basename
+		if fi, err := os.Stat(filepath.Join(dir, m)); err == nil && fi.Mode().IsRegular() {
+			total += fi.Size()
+		}
+	}
+	return tarTo(filepath.Dir(dir), args, out, false, total)
+}
+
 // createStream tars dir → archive, metering the pipe; rooted runs tar from the
 // parent with the basename as the member root (else dir as given, from CWD).
 func createStream(dir, archive string, useGzip, rooted bool) int {
@@ -63,7 +88,17 @@ func createStream(dir, archive string, useGzip, rooted bool) int {
 		return 1
 	}
 	total, _ := dirSize(dir) // best-effort total for the bar (tar adds header overhead)
+	arg, cmdDir := dir, ""
+	if rooted {
+		arg, cmdDir = filepath.Base(dir), filepath.Dir(dir)
+	}
+	return tarTo(cmdDir, []string{arg}, archive, useGzip, total)
+}
 
+// tarTo runs `tar -cf - <tarArgs>` from cmdDir ("" = inherit CWD), streaming into
+// archive (gzip when useGzip) and metering the pipe against total (best-effort, for
+// the bar). The single seam every create path shares.
+func tarTo(cmdDir string, tarArgs []string, archive string, useGzip bool, total int64) int {
 	out, err := os.Create(archive)
 	if err != nil {
 		render.Err(err.Error())
@@ -78,14 +113,8 @@ func createStream(dir, archive string, useGzip, rooted bool) int {
 		dest = gz
 	}
 
-	arg := dir
-	if rooted {
-		arg = filepath.Base(dir)
-	}
-	cmd := exec.Command("tar", "-cf", "-", arg)
-	if rooted {
-		cmd.Dir = filepath.Dir(dir)
-	}
+	cmd := exec.Command("tar", append([]string{"-cf", "-"}, tarArgs...)...)
+	cmd.Dir = cmdDir
 	cmd.Stderr = os.Stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
