@@ -6,7 +6,21 @@ import (
 	"testing"
 
 	"github.com/mayhl/mayhl_utils/internal/config"
+	"github.com/mayhl/mayhl_utils/internal/hooks"
 )
+
+// samePack compares two packs by value (pack holds a slice, so `==` won't do).
+func samePack(a, b pack) bool {
+	if a.dir != b.dir || a.dst != b.dst || a.name != b.name || len(a.members) != len(b.members) {
+		return false
+	}
+	for i := range a.members {
+		if a.members[i] != b.members[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // world builds a scratch-tier batch: a parent with two small run leaves, a
 // staged case copy, and a stray file. Returns the work root and the parent.
@@ -56,7 +70,7 @@ func TestPlanDirLeaf(t *testing.T) {
 		dst:  "/arch/proj/simulations/funwave/case_a",
 		name: "250.tar",
 	}
-	if ps[0] != want {
+	if !samePack(ps[0], want) {
 		t.Fatalf("got %+v want %+v", ps[0], want)
 	}
 }
@@ -69,7 +83,7 @@ func TestPlanDirBatch(t *testing.T) {
 		t.Fatalf("rc=%d packs=%v", rc, ps)
 	}
 	want := pack{dir: parent, dst: "/arch/proj/simulations", name: "funwave.tar"}
-	if ps[0] != want {
+	if !samePack(ps[0], want) {
 		t.Fatalf("got %+v want %+v", ps[0], want)
 	}
 }
@@ -115,6 +129,79 @@ func TestPlanDirNonCasePassesThrough(t *testing.T) {
 	ps, rc := planDir(dir)
 	if rc != 0 || ps != nil {
 		t.Fatalf("expected passthrough, got rc=%d packs=%v", rc, ps)
+	}
+}
+
+// leaf builds a scratch leaf with three timestep snapshots across two 100-blocks, a
+// stray log, and a run.toml — the shape splitPacks fans out.
+func leaf(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "case_a")
+	if err := os.MkdirAll(filepath.Join(dir, "output"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{
+		"output/fields_00000.nc", "output/fields_00001.nc", "output/fields_00100.nc",
+		"log.out", "run.toml",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestSplitPacksGlobRestAndProvenance(t *testing.T) {
+	dir := leaf(t)
+	m := hooks.PackManifest{Tars: []hooks.PackGroup{
+		{Suffix: "t000", Members: []string{"output/fields_000[0-9][0-9].nc"}},
+		{Suffix: "t001", Members: []string{"output/fields_001[0-9][0-9].nc"}},
+	}}
+	packs, restCount, err := splitPacks(dir, "case_a", "/dst", m)
+	if err != nil {
+		t.Fatalf("splitPacks: %v", err)
+	}
+	if restCount != 1 || len(packs) != 3 {
+		t.Fatalf("restCount=%d packs=%d", restCount, len(packs))
+	}
+	want := []pack{
+		{dir, "/dst", "case_a_t000.tar", []string{"output/fields_00000.nc", "output/fields_00001.nc", "run.toml"}},
+		{dir, "/dst", "case_a_t001.tar", []string{"output/fields_00100.nc", "run.toml"}},
+		{dir, "/dst", "case_a_rest.tar", []string{"log.out", "run.toml"}}, // the unmatched stray + injected provenance
+	}
+	for i := range want {
+		if !samePack(packs[i], want[i]) {
+			t.Fatalf("pack %d: got %+v want %+v", i, packs[i], want[i])
+		}
+	}
+}
+
+func TestSplitPacksDuplicateFileFails(t *testing.T) {
+	dir := leaf(t)
+	m := hooks.PackManifest{Tars: []hooks.PackGroup{
+		{Suffix: "a", Members: []string{"output/fields_00000.nc"}},
+		{Suffix: "b", Members: []string{"output/fields_0000*.nc"}}, // also claims 00000
+	}}
+	if _, _, err := splitPacks(dir, "case_a", "/dst", m); err == nil {
+		t.Fatal("expected a double-claim error")
+	}
+}
+
+func TestSplitPacksBadSuffixFails(t *testing.T) {
+	dir := leaf(t)
+	for _, bad := range []string{"", "a/b", "..", "t 0"} {
+		m := hooks.PackManifest{Tars: []hooks.PackGroup{{Suffix: bad, Members: []string{"log.out"}}}}
+		if _, _, err := splitPacks(dir, "case_a", "/dst", m); err == nil {
+			t.Fatalf("suffix %q: expected an error", bad)
+		}
+	}
+}
+
+func TestSplitPacksNoMatchFails(t *testing.T) {
+	dir := leaf(t)
+	m := hooks.PackManifest{Tars: []hooks.PackGroup{{Suffix: "x", Members: []string{"nope/*.dat"}}}}
+	if _, _, err := splitPacks(dir, "case_a", "/dst", m); err == nil {
+		t.Fatal("expected a no-match error (nothing to split → degrade)")
 	}
 }
 

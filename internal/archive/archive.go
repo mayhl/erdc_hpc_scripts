@@ -13,12 +13,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/mayhl/mayhl_utils/internal/config"
+	"github.com/mayhl/mayhl_utils/internal/hooks"
 	"github.com/mayhl/mayhl_utils/internal/mirror"
 	"github.com/mayhl/mayhl_utils/internal/render"
 	"github.com/mayhl/mayhl_utils/internal/tar"
 )
+
+// provenanceFile is the run record `mu job prep` plants in every leaf; the pack hook
+// splitter injects it into every chunk so any chunk extracts with its provenance.
+const provenanceFile = "run.toml"
 
 // Run dispatches one wrapped invocation: sub is the archive subcommand, args
 // the rest verbatim. Returns a process exit code (failures already rendered).
@@ -74,11 +80,13 @@ func run(bin, dir, cdir, sub string, args []string) int {
 }
 
 // pack is one dir → staged tar → put: the tar stages next to dir and lands at
-// dst/name on the archive side.
+// dst/name on the archive side. members (nil = the whole dir) is the leaf-relative
+// subset a pack-hook chunk carries.
 type pack struct {
-	dir  string // local dir to tar
-	dst  string // archive-side -C dir
-	name string // tar basename, e.g. "250.tar"
+	dir     string   // local dir to tar
+	dst     string   // archive-side -C dir
+	name    string   // tar basename, e.g. "250.tar"
+	members []string // leaf-relative member subset; nil = whole dir
 }
 
 // put plans and runs the tar tiers for a flagless `archive put`: a case/run
@@ -131,12 +139,12 @@ func put(bin, wd string, args []string) int {
 // the batch tier, skipping guarded leaves; anything else returns nil (passthrough).
 func planDir(dir string) ([]pack, int) {
 	if _, _, ok := mirror.ClassifyCase(filepath.Base(dir)); ok {
-		p, err := leafPack(dir)
+		ps, err := leafPack(dir)
 		if err != nil {
 			render.Err(err.Error())
 			return nil, 2
 		}
-		return []pack{p}, 0
+		return ps, 0
 	}
 	leaves, others := caseLeaves(dir)
 	if len(leaves) == 0 {
@@ -155,11 +163,11 @@ func planDir(dir string) ([]pack, int) {
 			render.Err(err.Error())
 			return nil, 2
 		}
-		return []pack{{dir, filepath.Dir(proj), filepath.Base(proj) + ".tar"}}, 0
+		return []pack{{dir, filepath.Dir(proj), filepath.Base(proj) + ".tar", nil}}, 0
 	}
 	var out []pack
 	for _, l := range leaves {
-		p, err := leafPack(l)
+		ps, err := leafPack(l)
 		if err != nil {
 			// a staged bare case beside its runs is normal on scratch — the
 			// authored input archives from $HOME, so skip it, don't abort the batch
@@ -167,7 +175,7 @@ func planDir(dir string) ([]pack, int) {
 			others++
 			continue
 		}
-		out = append(out, p)
+		out = append(out, ps...)
 	}
 	if len(out) == 0 {
 		render.Err("nothing packable in " + dir + " — every case leaf skipped")
@@ -179,21 +187,157 @@ func planDir(dir string) ([]pack, int) {
 	return out, 0
 }
 
-// leafPack builds the pack for one case/run leaf: the tar lands AT the leaf's
-// projection (…/case_a/250.tar) with the flat local name as the member root, so
-// get+extract on scratch recreates the dir exactly. The projection call is also
-// the provenance guard (inputs from permanent, runs from scratch).
-func leafPack(dir string) (pack, error) {
+// leafPack builds the packs for one case/run leaf. Below tar_hook_threshold, or with
+// no model pack hook, it's ONE tar at the leaf's projection (…/case_a/case_a.tar) with
+// the flat local name as the member root, so get+extract on scratch recreates the dir
+// exactly. An oversize leaf that ships a pack hook is SPLIT: the hook names member
+// globs per chunk, mu expands them, sweeps anything unmatched into a <base>_rest.tar,
+// and injects run.toml into every chunk. A broken, empty, or absent hook degrades to
+// the single tar — a hook never blocks an archive. The projection call is also the
+// provenance guard (inputs from permanent, runs from scratch).
+func leafPack(dir string) ([]pack, error) {
 	proj, err := mirror.Archive(dir)
 	if err != nil {
-		return pack{}, err
+		return nil, err
 	}
-	if sz := duBytes(dir); sz >= config.TarHookThreshold() {
-		// FUTURE: hand leaves this size to the model pack hook instead
-		render.Warn(fmt.Sprintf("%s is %s — packing one tar; a model pack hook should split it",
-			filepath.Base(dir), render.HumanBytes(sz)))
+	base, dst := filepath.Base(proj), filepath.Dir(proj)
+	whole := []pack{{dir: dir, dst: dst, name: base + ".tar"}}
+	if duBytes(dir) < config.TarHookThreshold() {
+		return whole, nil
 	}
-	return pack{dir, filepath.Dir(proj), filepath.Base(proj) + ".tar"}, nil
+	hook, ok := hooks.Find(dir, "pack")
+	if !ok {
+		render.Warn(fmt.Sprintf("%s is oversize — packing one tar; add a model pack hook to split it", base))
+		return whole, nil
+	}
+	m, err := hooks.ExecPack(hook, dir)
+	if err != nil {
+		render.Warn(fmt.Sprintf("%s pack hook: %s — packing one tar", base, err))
+		return whole, nil
+	}
+	packs, restCount, err := splitPacks(dir, base, dst, m)
+	if err != nil {
+		render.Warn(fmt.Sprintf("%s pack hook: %s — packing one tar", base, err))
+		return whole, nil
+	}
+	if restCount > 0 {
+		render.Warn(fmt.Sprintf("%s: %d file(s) not named by the pack hook → %s_rest.tar", base, restCount, base))
+	}
+	return packs, nil
+}
+
+// splitPacks expands a pack manifest against the leaf's real files into per-chunk
+// packs. Each group's masks (filepath.Match globs, leaf-relative) select regular
+// files; matching intersects the actual walk, so a mask can only ever name a file that
+// exists — no path escape. A file claimed by two groups, or a bad/duplicate suffix, is
+// a broken hook → error (leafPack then degrades to one tar). Files matched by no group
+// become a <base>_rest.tar; run.toml is provenance — excluded from matching and
+// injected into EVERY chunk. restCount is the rest-tar's file count (0 = full coverage,
+// no rest tar).
+func splitPacks(dir, base, dst string, m hooks.PackManifest) (packs []pack, restCount int, err error) {
+	files, err := leafFiles(dir)
+	if err != nil {
+		return nil, 0, err
+	}
+	claimed := map[string]string{} // file → the suffix that owns it
+	seen := map[string]bool{}      // suffixes used, to catch a tar-name collision
+	for _, g := range m.Tars {
+		if !validSuffix(g.Suffix) {
+			return nil, 0, fmt.Errorf("invalid tar suffix %q", g.Suffix)
+		}
+		if seen[g.Suffix] {
+			return nil, 0, fmt.Errorf("duplicate tar suffix %q", g.Suffix)
+		}
+		seen[g.Suffix] = true
+		var members []string
+		for _, f := range files {
+			if !matchesAny(g.Members, f) {
+				continue
+			}
+			if owner, dup := claimed[f]; dup {
+				return nil, 0, fmt.Errorf("%s claimed by both %q and %q", f, owner, g.Suffix)
+			}
+			claimed[f] = g.Suffix
+			members = append(members, f)
+		}
+		if len(members) == 0 {
+			continue // a group that names nothing present — skip the empty chunk
+		}
+		packs = append(packs, pack{dir, dst, base + "_" + g.Suffix + ".tar", injectProvenance(dir, members)})
+	}
+	if len(packs) == 0 {
+		return nil, 0, errors.New("matched no files")
+	}
+	var rest []string
+	for _, f := range files {
+		if _, ok := claimed[f]; !ok {
+			rest = append(rest, f)
+		}
+	}
+	if len(rest) > 0 {
+		packs = append(packs, pack{dir, dst, base + "_rest.tar", injectProvenance(dir, rest)})
+	}
+	return packs, len(rest), nil
+}
+
+// leafFiles lists dir's regular files as leaf-relative slash paths, skipping the
+// provenance record (injected into every chunk separately) — the set the manifest
+// masks match against.
+func leafFiles(dir string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		if rel = filepath.ToSlash(rel); rel != provenanceFile {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	return out, err
+}
+
+// matchesAny reports whether rel matches any of the leaf-relative masks (filepath.Match
+// per segment — a glob does not cross "/").
+func matchesAny(masks []string, rel string) bool {
+	for _, pat := range masks {
+		if ok, _ := filepath.Match(pat, rel); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// injectProvenance appends run.toml to a chunk's members when the leaf has one, so every
+// chunk carries the run's record; absent → members unchanged.
+func injectProvenance(dir string, members []string) []string {
+	if _, err := os.Stat(filepath.Join(dir, provenanceFile)); err == nil {
+		return append(members, provenanceFile)
+	}
+	return members
+}
+
+// validSuffix guards a hook-supplied tar suffix: it becomes a filename component
+// (<base>_<suffix>.tar), so no separators, no parent refs, just the safe name chars.
+func validSuffix(s string) bool {
+	if s == "" || strings.ContainsAny(s, `/\`) || strings.Contains(s, "..") {
+		return false
+	}
+	for _, r := range s {
+		if r == '-' || r == '_' || r == '.' || (r >= '0' && r <= '9') ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // runPack stages the tar next to the dir, puts it with -D (native
@@ -205,7 +349,7 @@ func runPack(bin string, p pack) int {
 		render.Err(staging + " already exists — remove it or put it explicitly")
 		return 1
 	}
-	if rc := tar.CreateRooted(p.dir, staging); rc != 0 {
+	if rc := tar.CreateRootedSubset(p.dir, staging, p.members); rc != 0 {
 		return rc
 	}
 	rc := run(bin, filepath.Dir(p.dir), p.dst, "put", []string{"-D", p.name})
