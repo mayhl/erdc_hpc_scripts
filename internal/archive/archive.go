@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/mayhl/mayhl_utils/internal/config"
@@ -44,6 +46,9 @@ func Run(sub string, args []string) int {
 	}
 	if sub == "put" && len(args) > 0 && !hasFlags(args) {
 		return put(bin, wd, args)
+	}
+	if sub == "get" && len(args) > 0 && !hasFlags(args) {
+		return get(bin, wd, args)
 	}
 	proj, err := mirror.Archive(wd)
 	if err != nil {
@@ -132,6 +137,94 @@ func put(bin, wd string, args []string) int {
 		return run(bin, "", proj, "put", rest)
 	}
 	return 0
+}
+
+// get reassembles case/run leaves from the archive — the retrieval counterpart of
+// put's packing. For each leaf arg it lists the leaf's chunk tars at its projection (a
+// pack-hook split leaf is <base>_<suffix>.tar plus <base>_rest.tar; an unsplit one is
+// just <base>.tar) and fetches them with the site tool's own -x: get extracts each tar
+// and, without -S, drops it — and every chunk is rooted at the leaf basename, so they
+// union back into the exact dir. Anything that isn't a case/run leaf falls to a single
+// passthrough get, the same split as put's rest.
+func get(bin, wd string, args []string) int {
+	var rest []string
+	for _, a := range args {
+		if _, _, ok := mirror.ClassifyCase(filepath.Base(a)); !ok {
+			rest = append(rest, a)
+			continue
+		}
+		if rc := getLeaf(bin, wd, a); rc != 0 {
+			return rc
+		}
+	}
+	if len(rest) > 0 {
+		proj, err := mirror.Archive(wd)
+		if err != nil {
+			render.Err(err.Error())
+			return 2
+		}
+		return run(bin, "", proj, "get", rest)
+	}
+	return 0
+}
+
+// getLeaf fetches and reassembles one leaf. It projects the (possibly not-yet-present)
+// local path to its archive dir — the same provenance guard as put, so a run pulls to
+// the scratch tier and inputs to permanent — lists the chunk set there, then runs one
+// `get -C <dst> -x <chunks…>` from the local parent so the extractions land as the leaf.
+func getLeaf(bin, wd, leaf string) int {
+	abs := leaf
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(wd, leaf)
+	}
+	abs = filepath.Clean(abs)
+	proj, err := mirror.Archive(abs)
+	if err != nil {
+		render.Err(err.Error())
+		return 2
+	}
+	base, dst := filepath.Base(proj), filepath.Dir(proj)
+	out, err := lsOutput(bin, filepath.Join(dst, base+"*.tar"))
+	if err != nil {
+		render.Err(fmt.Sprintf("archive ls %s: %s", dst, err))
+		return 1
+	}
+	names := chunkNames(base, out)
+	if len(names) == 0 {
+		render.Err(fmt.Sprintf("no archived chunks for %s at %s", filepath.Base(abs), dst))
+		return 1
+	}
+	parent := filepath.Dir(abs)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		render.Err(err.Error())
+		return 1
+	}
+	return run(bin, parent, dst, "get", append([]string{"-x"}, names...))
+}
+
+// lsOutput runs `archive ls <pattern>` capturing stdout (a wildcard reaches archive's
+// own remote glob — we exec without a shell, so nothing expands it locally first).
+func lsOutput(bin, pattern string) (string, error) {
+	out, err := exec.Command(bin, "ls", pattern).Output()
+	return string(out), err
+}
+
+// chunkNames picks a leaf's chunk tars out of `archive ls` output: the basenames
+// matching <base>.tar or <base>_<suffix>.tar — the exact split set, so a sibling run in
+// the same case container (e.g. 2500 next to 250) can't be swept in by the ls wildcard.
+// It reduces to basenames, tolerating ls listing bare names or full paths.
+func chunkNames(base, lsOut string) []string {
+	re := regexp.MustCompile("^" + regexp.QuoteMeta(base) + `(_.*)?\.tar$`)
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range strings.Fields(lsOut) {
+		if n := filepath.Base(f); re.MatchString(n) && !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // planDir maps one dir arg to its packs: a case/run leaf packs itself (a guard

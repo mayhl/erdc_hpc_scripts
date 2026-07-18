@@ -23,8 +23,10 @@ func archiveCmd() *cobra.Command {
 			"turns on the native size verify, and a flagless `put` packs case material into\n" +
 			"tar tiers first — one batch tar for a parent of small case leaves (under\n" +
 			"[project] tar_parent_threshold), else one tar per leaf, landing at the leaf's\n" +
-			"projection (…/case_a/250.tar) with the flat local name inside. An explicit -C\n" +
-			"in the args passes through untouched.",
+			"projection (…/case_a/250.tar) with the flat local name inside; an oversize leaf\n" +
+			"with a model pack hook is split into chunk tars. A flagless `get <leaf>` is the\n" +
+			"reverse: it lists the leaf's chunk set and fetches it with -x, extracting the\n" +
+			"chunks back into the exact dir. An explicit -C in the args passes through untouched.",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {

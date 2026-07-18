@@ -205,6 +205,38 @@ func TestSplitPacksNoMatchFails(t *testing.T) {
 	}
 }
 
+func TestChunkNames(t *testing.T) {
+	// a split leaf: the rest tar + two chunk tars, listed one per line
+	got := chunkNames("250", "250_rest.tar\n250_t000.tar\n250_t001.tar\n")
+	want := []string{"250_rest.tar", "250_t000.tar", "250_t001.tar"}
+	if !equalStrings(got, want) {
+		t.Fatalf("split: got %v want %v", got, want)
+	}
+	// an unsplit leaf beside a sibling run 2500 in the same container — the wildcard
+	// ls sweeps both, the exact match must keep only 250's, and tolerate full paths
+	got = chunkNames("250", "/arch/proj/case_a/250.tar  /arch/proj/case_a/2500.tar  /arch/proj/case_a/250_rest.tar")
+	want = []string{"250.tar", "250_rest.tar"}
+	if !equalStrings(got, want) {
+		t.Fatalf("sibling: got %v want %v", got, want)
+	}
+	// nothing archived
+	if got := chunkNames("999", "250.tar\n"); len(got) != 0 {
+		t.Fatalf("empty: got %v", got)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestFlagAndCDetection(t *testing.T) {
 	if !hasArg([]string{"put", "-C", "/x"}, "-C") || hasArg([]string{"-Cx"}, "-C") {
 		t.Fatal("hasArg")
