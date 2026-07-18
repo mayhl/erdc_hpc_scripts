@@ -117,6 +117,11 @@ type target struct {
 	table  int
 	key    string
 	quoted bool
+	// A leaf on an UNCONFIGURED node has no block yet (table == -1): its first edited key
+	// creates the [[cluster.node]] block. clusterName+node identify where, resolved by name
+	// at write time because InsertTable re-parses and renumbers table indices.
+	clusterName string
+	node        string
 }
 
 // configCmd is `mu config`: show the resolved config, or edit it in the panel. The two-scope
@@ -187,6 +192,43 @@ func buildTree(doc *tomledit.Doc) ([]render.EditorNode, map[string]target) {
 		return "", "unset"
 	}
 
+	// nodeNode builds one machine's subtree. ni>=0 is a real [[cluster.node]] block; ni<0 is
+	// a node listed in `nodes` with no block yet — every key shows the value inherited from
+	// the cluster, and its write target (table -1, clusterName+node) defers block creation to
+	// the first edit. The inherited-value note (↳ from <cluster>) is the resolution the file
+	// itself can't show.
+	nodeNode := func(ci int, cname, nname string, ni int, accts []string) render.EditorNode {
+		var nkids []render.EditorNode
+		for _, k := range nodeKeys {
+			k = acctKey(k, accts, true)
+			var v, origin string
+			ok := false
+			if ni >= 0 {
+				v, ok = doc.Value(ni, k.name)
+			}
+			switch {
+			case ok:
+				v = tomledit.Unquote(v)
+			default:
+				if cv, cok := doc.Value(ci, k.name); cok {
+					v, origin = tomledit.Unquote(cv), render.Glyph("↳ ", "< ")+"from "+cname
+				} else {
+					v, origin = "", "unset"
+				}
+			}
+			t := target{table: ni, key: k.name, quoted: k.quoted}
+			if ni < 0 {
+				t.clusterName, t.node = cname, nname
+			}
+			nkids = append(nkids, leaf([]string{cname, nname, k.name}, t, k, v, origin))
+		}
+		label, h := nname, render.HueLoc
+		if ni < 0 {
+			label, h = nname+render.Glyph("  · ", "  * ")+"unconfigured", render.HueDim
+		}
+		return render.EditorNode{Label: label, Key: nname, Hue: h, Children: nkids}
+	}
+
 	// Root scalars (hpc_user) live at the TOML top level, not under a [table], but a lone
 	// top-level key reads as orphaned beside the section headers — so the panel gathers them
 	// under a synthetic "[general]" heading. Display only: each still writes to table 0. The
@@ -194,7 +236,7 @@ func buildTree(doc *tomledit.Doc) ([]render.EditorNode, map[string]target) {
 	var general []render.EditorNode
 	for _, k := range rootKeys {
 		v, origin := value(0, k)
-		general = append(general, leaf([]string{"general", k.name}, target{0, k.name, k.quoted}, k, v, origin))
+		general = append(general, leaf([]string{"general", k.name}, target{table: 0, key: k.name, quoted: k.quoted}, k, v, origin))
 	}
 	if len(general) > 0 {
 		root = append(root, render.EditorNode{Label: "[general]", Key: "general", Hue: render.HueGroup, Children: general})
@@ -207,7 +249,7 @@ func buildTree(doc *tomledit.Doc) ([]render.EditorNode, map[string]target) {
 		var kids []render.EditorNode
 		for _, k := range tableKeys[name] {
 			v, origin := value(ts[0], k)
-			kids = append(kids, leaf([]string{name, k.name}, target{ts[0], k.name, k.quoted}, k, v, origin))
+			kids = append(kids, leaf([]string{name, k.name}, target{table: ts[0], key: k.name, quoted: k.quoted}, k, v, origin))
 		}
 		root = append(root, render.EditorNode{Label: "[" + name + "]", Key: name, Hue: render.HueGroup, Children: kids})
 	}
@@ -219,47 +261,19 @@ func buildTree(doc *tomledit.Doc) ([]render.EditorNode, map[string]target) {
 		for _, k := range clusterKeys {
 			k = acctKey(k, accts, false)
 			v, origin := value(ci, k)
-			kids = append(kids, leaf([]string{cname, k.name}, target{ci, k.name, k.quoted}, k, v, origin))
+			kids = append(kids, leaf([]string{cname, k.name}, target{table: ci, key: k.name, quoted: k.quoted}, k, v, origin))
 		}
 		// The cluster's machines: a node block is owned by the cluster above it.
 		for _, ni := range doc.Tables("cluster.node") {
 			if doc.Owner(ni) != ci {
 				continue
 			}
-			nname := tableValue(doc, ni, "name")
-			var nkids []render.EditorNode
-			for _, k := range nodeKeys {
-				k = acctKey(k, accts, true)
-				v, ok := doc.Value(ni, k.name)
-				origin := ""
-				switch {
-				case ok:
-					v = tomledit.Unquote(v)
-				default:
-					// Fall back exactly as config.siteFor does, and SAY so — the whole
-					// point of the panel is making that resolution visible.
-					if cv, cok := doc.Value(ci, k.name); cok {
-						// ↳ marks a value INHERITED from the wider scope — the one thing the
-						// file itself cannot show you. Only inherited values get it; "unset"
-						// came from nowhere.
-						v, origin = tomledit.Unquote(cv), render.Glyph("↳ ", "< ")+"from "+cname
-					} else {
-						v, origin = "", "unset"
-					}
-				}
-				nkids = append(nkids, leaf([]string{cname, nname, k.name}, target{ni, k.name, k.quoted}, k, v, origin))
-			}
-			kids = append(kids, render.EditorNode{Label: nname, Hue: render.HueLoc, Children: nkids})
+			kids = append(kids, nodeNode(ci, cname, tableValue(doc, ni, "name"), ni, accts))
 		}
-		// Nodes listed in `nodes` but with no [[cluster.node]] block: surface them as
-		// unconfigured so the gap is visible. They resolve entirely to cluster defaults
-		// until given a block; -i creates one (v2a).
+		// Nodes listed in `nodes` with no block: editable-but-unconfigured — every key shows
+		// the inherited value, and the first edit creates the block (v2a create-on-write).
 		for _, nm := range unconfiguredNodes(doc, ci) {
-			kids = append(kids, render.EditorNode{
-				Label: nm + render.Glyph("  · ", "  * ") + "unconfigured (inherits " + cname + ")",
-				Key:   nm,
-				Hue:   render.HueDim,
-			})
+			kids = append(kids, nodeNode(ci, cname, nm, -1, accts))
 		}
 		root = append(root, render.EditorNode{Label: "[[cluster]] " + cname, Key: cname, Hue: render.HueLoc, Children: kids})
 	}
@@ -373,17 +387,7 @@ func configEdit() error {
 		render.Info("no changes")
 		return nil
 	}
-	for _, ch := range changes {
-		t, ok := targets[strings.Join(ch.Path, "\x00")]
-		if !ok {
-			continue
-		}
-		raw := strings.TrimSpace(ch.New)
-		if t.quoted {
-			raw = tomledit.Quote(raw)
-		}
-		doc.Set(t.table, t.key, raw)
-	}
+	applyChanges(doc, targets, changes)
 	merged := doc.String()
 	if merged == old {
 		render.Info("no changes")
@@ -402,6 +406,62 @@ func configEdit() error {
 	}
 	render.OK(fmt.Sprintf("wrote %s (backup: %s.bak)", path, path))
 	return nil
+}
+
+// applyChanges writes the panel's edits into doc. Two phases, because create-on-write must
+// not corrupt cached table indices: (1) scalar edits on existing tables — Set never
+// renumbers the table list, so their indices stay valid; (2) unconfigured-node edits,
+// grouped by node so each machine's [[cluster.node]] block is created once (InsertTable
+// re-parses, so the cluster is re-resolved by name) and all its keys set before the next
+// node's insert. Unknown paths are skipped.
+func applyChanges(doc *tomledit.Doc, targets map[string]target, changes []render.Change) {
+	key := func(path []string) string { return strings.Join(path, "\x00") }
+	var creates []render.Change
+	for _, ch := range changes {
+		t, ok := targets[key(ch.Path)]
+		if !ok {
+			continue
+		}
+		if t.table < 0 {
+			creates = append(creates, ch) // unconfigured node — defer to phase 2
+			continue
+		}
+		doc.Set(t.table, t.key, rawValue(t, ch.New))
+	}
+	// group deferred creates by node, first-seen order, so each block is built in one go
+	byNode := map[string][]render.Change{}
+	var order []string
+	for _, ch := range creates {
+		t := targets[key(ch.Path)]
+		nk := t.clusterName + "\x00" + t.node
+		if _, seen := byNode[nk]; !seen {
+			order = append(order, nk)
+		}
+		byNode[nk] = append(byNode[nk], ch)
+	}
+	for _, nk := range order {
+		chs := byNode[nk]
+		t0 := targets[key(chs[0].Path)]
+		ci := doc.Find("cluster", "name", t0.clusterName)
+		if ci < 0 {
+			continue
+		}
+		idx := doc.InsertTable(ci, "cluster.node", [][2]string{{"name", tomledit.Quote(t0.node)}})
+		for _, ch := range chs {
+			t := targets[key(ch.Path)]
+			doc.Set(idx, t.key, rawValue(t, ch.New))
+		}
+	}
+}
+
+// rawValue renders a change's new text as the raw TOML value Set expects — trimmed, and
+// quoted when the key is a string.
+func rawValue(t target, v string) string {
+	raw := strings.TrimSpace(v)
+	if t.quoted {
+		raw = tomledit.Quote(raw)
+	}
+	return raw
 }
 
 // hue colors text unless the terminal (or the user) asked for plain — render.Bold always

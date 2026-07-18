@@ -204,3 +204,51 @@ func TestArrayMembers(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyChangesCreatesNodeBlock(t *testing.T) {
+	d := tomledit.Parse("[[cluster]]\nname  = \"dsrc1\"\nnodes = [\"node-a\"]\n")
+	path := []string{"dsrc1", "node-a", "cores_per_node"}
+	targets := map[string]target{
+		strings.Join(path, "\x00"): {table: -1, key: "cores_per_node", clusterName: "dsrc1", node: "node-a"},
+	}
+	applyChanges(d, targets, []render.Change{{Path: path, New: "128"}})
+	got := d.String()
+	ni := d.Find("cluster.node", "name", "node-a")
+	if ni < 0 {
+		t.Fatalf("block not created on first edit:\n%s", got)
+	}
+	if v, ok := d.Value(ni, "cores_per_node"); !ok || v != "128" {
+		t.Fatalf("cores not written: %q %v\n%s", v, ok, got)
+	}
+}
+
+// TestApplyChangesMultipleNewNodes exercises the index-robustness the two-phase apply exists
+// for: each InsertTable re-parses, so the second cluster must be re-resolved by name.
+func TestApplyChangesMultipleNewNodes(t *testing.T) {
+	d := tomledit.Parse("[[cluster]]\nname  = \"dsrc1\"\nnodes = [\"a\"]\n\n[[cluster]]\nname  = \"dsrc2\"\nnodes = [\"b\"]\n")
+	targets := map[string]target{}
+	mk := func(cl, nd, k string) []string {
+		p := []string{cl, nd, k}
+		targets[strings.Join(p, "\x00")] = target{table: -1, key: k, clusterName: cl, node: nd}
+		return p
+	}
+	applyChanges(d, targets, []render.Change{
+		{Path: mk("dsrc1", "a", "cores_per_node"), New: "64"},
+		{Path: mk("dsrc2", "b", "cores_per_node"), New: "128"},
+	})
+	got := d.String()
+	a, b := d.Find("cluster.node", "name", "a"), d.Find("cluster.node", "name", "b")
+	if a < 0 || b < 0 {
+		t.Fatalf("missing blocks:\n%s", got)
+	}
+	if va, _ := d.Value(a, "cores_per_node"); va != "64" {
+		t.Fatalf("a cores %q\n%s", va, got)
+	}
+	if vb, _ := d.Value(b, "cores_per_node"); vb != "128" {
+		t.Fatalf("b cores %q\n%s", vb, got)
+	}
+	// each block landed under its OWN cluster (not swapped by a stale index)
+	if d.Owner(a) != d.Find("cluster", "name", "dsrc1") || d.Owner(b) != d.Find("cluster", "name", "dsrc2") {
+		t.Fatalf("blocks under wrong cluster:\n%s", got)
+	}
+}
