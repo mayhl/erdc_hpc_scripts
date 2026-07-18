@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -220,15 +221,25 @@ func (e *collEditor) view(parentTitle string) string {
 		var cell string
 		switch {
 		case e.isSet():
-			box := glyph("☐ ", "[ ] ")
+			mark := glyph("☐ ", "[ ] ")
 			if r.on {
-				box = glyph("☑ ", "[x] ")
+				mark = glyph("☑ ", "[x] ")
 			}
-			name := edValue.Render(r.val)
-			if cur {
-				name = selRow.Render(r.val)
+			// checked = blue (the node hue), unchecked = dim, so the set reads at a glance; the
+			// cursor row keeps the reverse highlight. Meaning still rides the ☑/☐ glyph, not the
+			// colour (per the house colour policy).
+			switch {
+			case cur:
+				ms := edUnset
+				if r.on {
+					ms = edOn
+				}
+				cell = ms.Render(mark) + selRow.Render(r.val)
+			case r.on:
+				cell = edOn.Render(mark + r.val)
+			default:
+				cell = edUnset.Render(mark + r.val)
 			}
-			cell = box + name
 		case e.isMap():
 			cell = e.renderCell(r.key, cur && e.col == 0, keyW) + edKey.Render(" = ") +
 				e.renderCell(r.val, cur && e.col == 1, 0)
@@ -272,6 +283,15 @@ func (e *collEditor) view(parentTitle string) string {
 		foot += dot + saveHint + dot + "esc cancel"
 	}
 	title := parentTitle + dot + e.label
+	if e.isSet() {
+		on := 0
+		for _, r := range e.rows {
+			if r.on {
+				on++
+			}
+		}
+		title += dot + fmt.Sprintf("%d/%d selected", on, len(e.rows))
+	}
 	out := selTitle.Render(title) + "\n" + box.Render(strings.Join(lines, "\n")) +
 		"\n" + selFoot.Render(foot)
 	return out

@@ -623,4 +623,5 @@ var (
 	edKey   = lg(HueID)   // cyan key labels, matching Form's field labels
 	edValue = lg(HueName) // white — the value is the content, so it carries the plain hue
 	edUnset = lg(HueDim)  // a key the file doesn't set
+	edOn    = lg(HueLoc)  // blue — a checked set member (nodes are blue in the palette)
 )
