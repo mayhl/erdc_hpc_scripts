@@ -41,10 +41,10 @@ func hpcQueueCmd() *cobra.Command {
 			"    hpc1 squeue | mu hpc queue",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if userList != "" && !validUserList(userList) {
-				return usageErr("--user takes a comma-separated user list (letters/digits/._-), e.g. -u alice,bob")
+			who, err := mustUserSel(userList, allUsers)
+			if err != nil {
+				return err
 			}
-			who := userSel{all: allUsers, list: userList}
 			if interactive {
 				if fleet || all {
 					return usageErr("mstat -i is single-cluster — drop -f/-e (use --node for another cluster)")
@@ -54,7 +54,6 @@ func hpcQueueCmd() *cobra.Command {
 			var jobs []queue.Job
 			var down []string
 			var label string
-			var err error
 			var hooksCh <-chan map[string]string // launched BEFORE the snapshot, concurrent with it
 			var fleetProg map[string]string      // collate paths: "label/id"-keyed, fetched per target
 			switch {
