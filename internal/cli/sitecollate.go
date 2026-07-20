@@ -54,7 +54,7 @@ func fetchSiteLocal(siteCmd string) (string, string, error) {
 func collateSite[T any](targets []queueTarget, scope, siteCmd string, parse func(string) []T, tag func(*T, string)) (string, []T, []string, error) {
 	if len(targets) == 0 {
 		if scope == "fleet" {
-			return "", nil, nil, usageErr("nothing in the fleet — set a `fleet = [...]` node list or `active = true` on a cluster, or use --all")
+			return "", nil, nil, usageErr("nothing in the fleet — set a `fleet = [...]` node list or `active = true` on a cluster, or use --all-systems")
 		}
 		return "", nil, nil, usageErr("no clusters configured — add clusters to config.toml")
 	}
