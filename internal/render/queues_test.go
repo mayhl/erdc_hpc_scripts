@@ -26,7 +26,7 @@ func TestQueueLoad(t *testing.T) {
 
 func TestPlanQueueCols(t *testing.T) {
 	rows := []QueueRow{{Name: "standard", Class: "CPU", MaxJobs: "50", MaxCores: "4096", Run: "1", Pend: "0"}}
-	headers := func(cols []queueCol) string {
+	headers := func(cols []col[QueueRow]) string {
 		h := make([]string, len(cols))
 		for i, c := range cols {
 			h[i] = c.header

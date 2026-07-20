@@ -35,6 +35,55 @@ func applyStyle(t table.Writer) {
 	}
 }
 
+// col is one renderable table column: its header and a row→cell formatter. The
+// column-planned house tables (queues/storage/usage/tunnels) each build a []col
+// over their own row type; plain plans assemble through appendCols, the variant
+// layouts (grouped usage, width-shed tunnels) compose headerRow/bodyRow directly.
+type col[T any] struct {
+	header string
+	cell   func(T) string
+}
+
+// headerRow formats the column headers as one table row.
+func headerRow[T any](cols []col[T]) table.Row {
+	row := make(table.Row, len(cols))
+	for i, c := range cols {
+		row[i] = c.header
+	}
+	return row
+}
+
+// bodyRow formats one item through the column plan.
+func bodyRow[T any](cols []col[T], r T) table.Row {
+	row := make(table.Row, len(cols))
+	for i, c := range cols {
+		row[i] = c.cell(r)
+	}
+	return row
+}
+
+// appendCols writes the header and one body row per item — the whole table body
+// for a plan with no per-row layout tricks.
+func appendCols[T any](t table.Writer, cols []col[T], rows []T) {
+	t.AppendHeader(headerRow(cols))
+	for _, r := range rows {
+		t.AppendRow(bodyRow(cols, r))
+	}
+}
+
+// anyReported reports whether any row carries a real (non-blank, non-zero) value in the
+// given field. Values arrive preformatted, so zero is "0" (counts) or "0B" (sizes).
+func anyReported[T any](rows []T, get func(T) string) bool {
+	for _, r := range rows {
+		switch strings.TrimSpace(get(r)) {
+		case "", "0", "0B":
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // NodeGroup is one cluster's nodes for NodesTable — a render-local view that keeps render
 // domain-free of config. Host is the fully-qualified ssh host for each node.
 type NodeGroup struct {

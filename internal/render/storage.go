@@ -19,12 +19,6 @@ type StorageRow struct {
 	System, Location, DiskUsed, DiskQuota, DiskPct, FilesUsed, FilesQuota, FilesPct string
 }
 
-// storageCol is one renderable storage-table column: its header and a row→cell formatter.
-type storageCol struct {
-	header string
-	cell   func(StorageRow) string
-}
-
 // StorageTable renders per-filesystem quota usage (show_storage) as the house table:
 // [System] / Location / Used / [Quota / Use%] / Files / [FileQuota / File%]. A quota pair
 // is dropped when no filesystem reports one, and System appears only in a collate view
@@ -36,18 +30,7 @@ func StorageTable(cluster string, rows []StorageRow) {
 	t.SetOutputMirror(os.Stdout)
 	applyStyle(t)
 	t.SetTitle(fmt.Sprintf("%s — storage", cluster))
-	header := make(table.Row, len(cols))
-	for i, c := range cols {
-		header[i] = c.header
-	}
-	t.AppendHeader(header)
-	for _, r := range rows {
-		row := make(table.Row, len(cols))
-		for i, c := range cols {
-			row[i] = c.cell(r)
-		}
-		t.AppendRow(row)
-	}
+	appendCols(t, cols, rows)
 	t.SetColumnConfigs([]table.ColumnConfig{
 		{Name: "System", Colors: tc(HueUser)}, // magenta — stands out from the blue Location
 		{Name: "Location", Colors: append(tc(HueGroup), text.Bold), WidthMax: 32, WidthMaxEnforcer: truncRight},
@@ -62,32 +45,29 @@ func StorageTable(cluster string, rows []StorageRow) {
 // reports a real quota — some systems emit 0/blank where no quota is set (file quotas
 // especially), and a column of 0s with a -- percent is noise. Usage columns always stay:
 // zero USAGE is information.
-func planStorageCols(rows []StorageRow) []storageCol {
-	var cols []storageCol
-	for _, r := range rows {
-		if r.System != "" {
-			cols = append(cols, storageCol{"System", func(r StorageRow) string { return dash(r.System) }})
-			break
-		}
+func planStorageCols(rows []StorageRow) []col[StorageRow] {
+	var cols []col[StorageRow]
+	if anyReported(rows, func(r StorageRow) string { return r.System }) {
+		cols = append(cols, col[StorageRow]{"System", func(r StorageRow) string { return dash(r.System) }})
 	}
 	cols = append(
 		cols,
-		storageCol{"Location", func(r StorageRow) string { return r.Location }},
-		storageCol{"Used", func(r StorageRow) string { return dash(r.DiskUsed) }},
+		col[StorageRow]{"Location", func(r StorageRow) string { return r.Location }},
+		col[StorageRow]{"Used", func(r StorageRow) string { return dash(r.DiskUsed) }},
 	)
 	if anyReported(rows, func(r StorageRow) string { return r.DiskQuota }) {
 		cols = append(
 			cols,
-			storageCol{"Quota", func(r StorageRow) string { return dash(r.DiskQuota) }},
-			storageCol{"Use%", func(r StorageRow) string { return pctCell(r.DiskPct) }},
+			col[StorageRow]{"Quota", func(r StorageRow) string { return dash(r.DiskQuota) }},
+			col[StorageRow]{"Use%", func(r StorageRow) string { return pctCell(r.DiskPct) }},
 		)
 	}
-	cols = append(cols, storageCol{"Files", func(r StorageRow) string { return dash(r.FilesUsed) }})
+	cols = append(cols, col[StorageRow]{"Files", func(r StorageRow) string { return dash(r.FilesUsed) }})
 	if anyReported(rows, func(r StorageRow) string { return r.FilesQuota }) {
 		cols = append(
 			cols,
-			storageCol{"FileQuota", func(r StorageRow) string { return dash(r.FilesQuota) }},
-			storageCol{"File%", func(r StorageRow) string { return pctCell(r.FilesPct) }},
+			col[StorageRow]{"FileQuota", func(r StorageRow) string { return dash(r.FilesQuota) }},
+			col[StorageRow]{"File%", func(r StorageRow) string { return pctCell(r.FilesPct) }},
 		)
 	}
 	return cols

@@ -21,12 +21,6 @@ type QueueRow struct {
 	Enabled, Running                                                            string
 }
 
-// queueCol is one renderable queues-table column: its header and a row→cell formatter.
-type queueCol struct {
-	header string
-	cell   func(QueueRow) string
-}
-
 // QueuesTable renders a cluster's batch queues (show_queues) as the house table. The full
 // column set is Queue / Class / [Type] / Walltime / MaxJobs / MaxCores / [MaxNodes] / Run /
 // Pend / Load / [State]. Class is the inferred node class; MaxNodes = MaxCores / cores-per-
@@ -40,19 +34,7 @@ func QueuesTable(cluster string, rows []QueueRow, all bool) {
 	t.SetOutputMirror(os.Stdout)
 	applyStyle(t)
 	t.SetTitle(fmt.Sprintf("%s — %d queues", cluster, len(rows)))
-
-	header := make(table.Row, len(cols))
-	for i, c := range cols {
-		header[i] = c.header
-	}
-	t.AppendHeader(header)
-	for _, r := range rows {
-		row := make(table.Row, len(cols))
-		for i, c := range cols {
-			row[i] = c.cell(r)
-		}
-		t.AppendRow(row)
-	}
+	appendCols(t, cols, rows)
 	// ColumnConfigs match by header name, so a config for an absent column is harmless.
 	// Class gets its own blue (HueLoc) to stand out next to the bright-blue bold Queue.
 	t.SetColumnConfigs([]table.ColumnConfig{
@@ -78,8 +60,8 @@ func QueueColumns(rows []QueueRow, all bool) []string {
 }
 
 // queueColDefs is the full set of column formatters, keyed by header.
-func queueColDefs() map[string]queueCol {
-	return map[string]queueCol{
+func queueColDefs() map[string]col[QueueRow] {
+	return map[string]col[QueueRow]{
 		"System":   {"System", func(r QueueRow) string { return dash(r.System) }},
 		"Queue":    {"Queue", func(r QueueRow) string { return r.Name }},
 		"Class":    {"Class", func(r QueueRow) string { return dash(r.Class) }},
@@ -101,7 +83,7 @@ func queueColDefs() map[string]queueCol {
 // the terminal: it starts from the full default set and sheds the raw columns in priority
 // order (MaxJobs → Pend → Run → MaxCores) until it fits termWidth, always keeping Queue,
 // Class, Walltime, the size column, and Load. A zero/unknown width (piped) sheds nothing.
-func planQueueCols(rows []QueueRow, all bool) []queueCol {
+func planQueueCols(rows []QueueRow, all bool) []col[QueueRow] {
 	defs := queueColDefs()
 	hasNodes := false
 	for _, r := range rows {
@@ -113,11 +95,8 @@ func planQueueCols(rows []QueueRow, all bool) []queueCol {
 	// System leads only in a collate view (rows tagged by cluster), like StorageTable —
 	// and is never shed: it's what disambiguates same-named queues across clusters.
 	var lead []string
-	for _, r := range rows {
-		if r.System != "" {
-			lead = []string{"System"}
-			break
-		}
+	if anyReported(rows, func(r QueueRow) string { return r.System }) {
+		lead = []string{"System"}
 	}
 
 	if all {
@@ -160,8 +139,8 @@ func planQueueCols(rows []QueueRow, all bool) []queueCol {
 }
 
 // pickCols resolves ordered header keys to their column defs.
-func pickCols(defs map[string]queueCol, order []string) []queueCol {
-	out := make([]queueCol, len(order))
+func pickCols(defs map[string]col[QueueRow], order []string) []col[QueueRow] {
+	out := make([]col[QueueRow], len(order))
 	for i, k := range order {
 		out[i] = defs[k]
 	}
@@ -182,7 +161,7 @@ func keepUndropped(order []string, dropped map[string]bool) []string {
 // queueColsFit reports whether the given columns render within the terminal width. A
 // zero/unknown width (output not a tty) is treated as unconstrained → always fits. Queue is
 // capped at its 24-col truncRight width so a long name doesn't force needless shedding.
-func queueColsFit(defs map[string]queueCol, order []string, rows []QueueRow) bool {
+func queueColsFit(defs map[string]col[QueueRow], order []string, rows []QueueRow) bool {
 	w := termWidth()
 	if w <= 0 {
 		return true

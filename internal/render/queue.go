@@ -502,19 +502,13 @@ type TunnelRow struct {
 	ID, Port, System, Job, Node, State, WallLeft string
 }
 
-// tunnelCol is one TunnelsTable column: its header and how to pull the cell from a row.
-type tunnelCol struct {
-	name string
-	cell func(TunnelRow) string
-}
-
 // TunnelsTable renders the open background tunnels. Domain-shaped like the other house
 // tables (JobsTable et al.): the caller hands rows, render owns the frame and accents. When
 // the terminal is too narrow for every column, the least useful ones are dropped in order
 // (Node, then Job) until it fits; piped output (unknown width) keeps them all so nothing is
 // lost downstream.
 func TunnelsTable(rows []TunnelRow) {
-	cols := []tunnelCol{
+	cols := []col[TunnelRow]{
 		{"ID", func(r TunnelRow) string { return r.ID }},
 		{"PORT", func(r TunnelRow) string { return r.Port }},
 		{"System", func(r TunnelRow) string { return r.System }},
@@ -534,22 +528,13 @@ func TunnelsTable(rows []TunnelRow) {
 	t.Style().Color.Separator = text.Colors{text.FgHiBlack}
 	t.SetTitle("Open tunnels")
 
-	header := table.Row{}
+	var kept []col[TunnelRow]
 	for _, c := range cols {
-		if keep[c.name] {
-			header = append(header, c.name)
+		if keep[c.header] {
+			kept = append(kept, c)
 		}
 	}
-	t.AppendHeader(header)
-	for _, r := range rows {
-		row := table.Row{}
-		for _, c := range cols {
-			if keep[c.name] {
-				row = append(row, c.cell(r))
-			}
-		}
-		t.AppendRow(row)
-	}
+	appendCols(t, kept, rows)
 	t.SetColumnConfigs([]table.ColumnConfig{
 		{Name: "ID", Colors: text.Colors{text.FgMagenta, text.Bold}}, // the handle you close by
 		{Name: "PORT", Colors: text.Colors{text.FgCyan}},
@@ -561,29 +546,29 @@ func TunnelsTable(rows []TunnelRow) {
 // order (lowest value first) only as needed. Unknown width (piped, avail <= 0) keeps everything.
 // The width model matches go-pretty's rounded style: each column costs its widest cell plus 3
 // (separator + two padding spaces), plus one closing border.
-func fitTunnelColumns(cols []tunnelCol, rows []TunnelRow, dropOrder []string, avail int) map[string]bool {
+func fitTunnelColumns(cols []col[TunnelRow], rows []TunnelRow, dropOrder []string, avail int) map[string]bool {
 	keep := make(map[string]bool, len(cols))
 	for _, c := range cols {
-		keep[c.name] = true
+		keep[c.header] = true
 	}
 	if avail <= 0 {
 		return keep
 	}
 	natural := make(map[string]int, len(cols))
 	for _, c := range cols {
-		w := utf8.RuneCountInString(c.name)
+		w := utf8.RuneCountInString(c.header)
 		for _, r := range rows {
 			if n := utf8.RuneCountInString(c.cell(r)); n > w {
 				w = n
 			}
 		}
-		natural[c.name] = w
+		natural[c.header] = w
 	}
 	fits := func() bool {
 		total := 1 // closing border
 		for _, c := range cols {
-			if keep[c.name] {
-				total += natural[c.name] + 3
+			if keep[c.header] {
+				total += natural[c.header] + 3
 			}
 		}
 		return total <= avail

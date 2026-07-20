@@ -3,7 +3,7 @@ package render
 import "testing"
 
 func TestFitTunnelColumns(t *testing.T) {
-	cols := []tunnelCol{
+	cols := []col[TunnelRow]{
 		{"ID", func(r TunnelRow) string { return r.ID }},
 		{"PORT", func(r TunnelRow) string { return r.Port }},
 		{"System", func(r TunnelRow) string { return r.System }},

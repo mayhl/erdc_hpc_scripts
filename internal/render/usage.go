@@ -23,12 +23,6 @@ type UsageRow struct {
 	Total                                                                               bool
 }
 
-// usageCol is one renderable usage-table column: its header and a row→cell formatter.
-type usageCol struct {
-	header string
-	cell   func(UsageRow) string
-}
-
 // UsageTable renders per-subproject allocation usage (show_usage) as the house table:
 // [System] / Subproject / Allocated / Used / Remaining / Remain% / [Background] / [vs FY].
 // fyLeft (bare "33.70", possibly "") lands in the title, not a column — it's one number
@@ -44,11 +38,7 @@ func UsageTable(cluster, fyLeft string, rows []UsageRow) {
 		title += fmt.Sprintf(" · FY %s%% left", fyLeft)
 	}
 	t.SetTitle("%s", title) // SetTitle Sprintf's its arg — the title's own % must not re-format
-	header := make(table.Row, len(cols))
-	for i, c := range cols {
-		header[i] = c.header
-	}
-	t.AppendHeader(header)
+	t.AppendHeader(headerRow(cols))
 	// Grouped collate layout: a blanked Subproject marks a group continuation, so a
 	// non-blank one after the first row starts a new group → divider. A table with no
 	// blanked rows (single-cluster, or nothing repeated) draws no dividers.
@@ -63,13 +53,11 @@ func UsageTable(cluster, fyLeft string, rows []UsageRow) {
 		if grouped && i > 0 && r.Subproject != "" {
 			t.AppendSeparator()
 		}
-		row := make(table.Row, len(cols))
-		for j, c := range cols {
-			cell := c.cell(r)
-			if r.Total {
-				cell = text.Bold.Sprint(cell)
+		row := bodyRow(cols, r)
+		if r.Total {
+			for j := range row {
+				row[j] = text.Bold.Sprint(row[j])
 			}
-			row[j] = cell
 		}
 		t.AppendRow(row)
 	}
@@ -86,46 +74,30 @@ func UsageTable(cluster, fyLeft string, rows []UsageRow) {
 // the systems an allocation spans. Background appears only when some row reports
 // background hours (the all-0/blank column is noise, same rule as the storage quota
 // pairs); vs FY appears only when a fiscal-year percent was parsed for some row.
-func planUsageCols(rows []UsageRow) []usageCol {
-	cols := []usageCol{
+func planUsageCols(rows []UsageRow) []col[UsageRow] {
+	cols := []col[UsageRow]{
 		{"Subproject", func(r UsageRow) string { return r.Subproject }},
 	}
-	for _, r := range rows {
-		if r.System != "" {
-			cols = append(cols, usageCol{"System", func(r UsageRow) string { return dash(r.System) }})
-			break
-		}
+	if anyReported(rows, func(r UsageRow) string { return r.System }) {
+		cols = append(cols, col[UsageRow]{"System", func(r UsageRow) string { return dash(r.System) }})
 	}
 	cols = append(
 		cols,
-		usageCol{"Allocated", func(r UsageRow) string { return dash(r.Allocated) }},
-		usageCol{"Used", func(r UsageRow) string { return dash(r.Used) }},
-		usageCol{"Remaining", func(r UsageRow) string { return dash(r.Remaining) }},
-		usageCol{"Remain%", remainCell},
+		col[UsageRow]{"Allocated", func(r UsageRow) string { return dash(r.Allocated) }},
+		col[UsageRow]{"Used", func(r UsageRow) string { return dash(r.Used) }},
+		col[UsageRow]{"Remaining", func(r UsageRow) string { return dash(r.Remaining) }},
+		col[UsageRow]{"Remain%", remainCell},
 	)
 	if anyReported(rows, func(r UsageRow) string { return r.Background }) {
-		cols = append(cols, usageCol{"Background", func(r UsageRow) string { return dash(r.Background) }})
+		cols = append(cols, col[UsageRow]{"Background", func(r UsageRow) string { return dash(r.Background) }})
 	}
 	for _, r := range rows {
 		if r.VsFY != "" {
-			cols = append(cols, usageCol{"vs FY", vsFYCell})
+			cols = append(cols, col[UsageRow]{"vs FY", vsFYCell})
 			break
 		}
 	}
 	return cols
-}
-
-// anyReported reports whether any row carries a real (non-blank, non-zero) value in the
-// given field. Values arrive preformatted, so zero is "0" (counts) or "0B" (sizes).
-func anyReported[T any](rows []T, get func(T) string) bool {
-	for _, r := range rows {
-		switch strings.TrimSpace(get(r)) {
-		case "", "0", "0B":
-		default:
-			return true
-		}
-	}
-	return false
 }
 
 // UsageRemain grades an allocation's percent REMAINING into a label + house hue. BOTH
