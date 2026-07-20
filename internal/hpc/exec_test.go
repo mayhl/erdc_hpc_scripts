@@ -145,6 +145,95 @@ func TestArmSpinner(t *testing.T) {
 	stop()                                         // clears a shown (here no-op) spinner without hanging
 }
 
+// TestRemoteExecQuoting: a command's own quotes and pipes must reach the remote bash
+// intact — RemoteExec passes it as ONE single-quoted `bash -lc` argv element, never
+// re-split by a local shell. Pinned against the literal quoted form via the MU_SSH stub.
+func TestRemoteExecQuoting(t *testing.T) {
+	stub := newSSHStub(t)
+	t.Setenv("MU_SSH_CONTROL_PERSIST", "0") // plain argv: the quote wrap is the subject
+	t.Setenv("MU_TEST_SSH_STDOUT", "2")
+	out, err := RemoteExec("u@host", `grep 'a b' "$f" | wc -l`)
+	if err != nil {
+		t.Fatalf("RemoteExec: %v", err)
+	}
+	if out != "2\n" {
+		t.Errorf("out = %q, want %q", out, "2\n")
+	}
+	calls := stub.calls(t)
+	if len(calls) != 1 {
+		t.Fatalf("want one ssh invocation, got %v", calls)
+	}
+	args := calls[0]
+	want := `bash -lc 'grep '\''a b'\'' "$f" | wc -l'`
+	if got := args[len(args)-1]; got != want {
+		t.Errorf("remote arg = %q, want %q", got, want)
+	}
+	if args[len(args)-2] != "u@host" {
+		t.Errorf("argv %v: target not before the command", args)
+	}
+}
+
+// TestRemoteExecTimeoutControlArgs: the fan-out path now rides the same ambient
+// ControlMaster as RemoteExec, and derives ConnectTimeout from the caller's deadline
+// rather than the interactive default.
+func TestRemoteExecTimeoutControlArgs(t *testing.T) {
+	stub := newSSHStub(t)
+	t.Setenv("MU_SSH_CONTROL_PERSIST", "") // treated as unset → the default window, reuse on
+	if _, err := RemoteExecTimeout("u@host", "true", 5*time.Second); err != nil {
+		t.Fatalf("RemoteExecTimeout: %v", err)
+	}
+	joined := strings.Join(stub.calls(t)[0], " ")
+	for _, want := range []string{
+		"ConnectTimeout=5",
+		"ControlMaster=auto",
+		"ControlPath=" + controlPath("u@host"),
+		"ControlPersist=" + strconv.Itoa(controlPersist),
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv %q missing %q", joined, want)
+		}
+	}
+
+	// reuse off → no control opts; a sub-second deadline clamps ConnectTimeout to 1
+	stub2 := newSSHStub(t)
+	t.Setenv("MU_SSH_CONTROL_PERSIST", "0")
+	if _, err := RemoteExecTimeout("u@host", "true", 900*time.Millisecond); err != nil {
+		t.Fatalf("RemoteExecTimeout: %v", err)
+	}
+	joined = strings.Join(stub2.calls(t)[0], " ")
+	if strings.Contains(joined, "ControlMaster") {
+		t.Errorf("persist=0 must drop the control opts: %q", joined)
+	}
+	if !strings.Contains(joined, "ConnectTimeout=1") {
+		t.Errorf("sub-second deadline must clamp ConnectTimeout to 1: %q", joined)
+	}
+}
+
+// TestRemoteExecTimeoutDeadline: a hung remote (the stub sleeping past the deadline) is
+// killed and reported as a clean timeout, not a raw signal error.
+func TestRemoteExecTimeoutDeadline(t *testing.T) {
+	newSSHStub(t)
+	t.Setenv("MU_SSH_CONTROL_PERSIST", "0")
+	t.Setenv("MU_TEST_SSH_SLEEP", "5")
+	_, err := RemoteExecTimeout("u@host", "true", 150*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timeout after") {
+		t.Errorf("err = %v, want a timeout", err)
+	}
+}
+
+// TestRemoteExecTimeoutStderrFold: a failure with remote stderr folds its first line into
+// the error — never the classify probe (no host is dialed when stderr explains it).
+func TestRemoteExecTimeoutStderrFold(t *testing.T) {
+	newSSHStub(t)
+	t.Setenv("MU_SSH_CONTROL_PERSIST", "0")
+	t.Setenv("MU_TEST_SSH_EXIT", "255")
+	t.Setenv("MU_TEST_SSH_STDERR", "kinit: no credentials\nsecond line")
+	_, err := RemoteExecTimeout("u@host", "true", 5*time.Second)
+	if err == nil || err.Error() != "kinit: no credentials" {
+		t.Errorf("err = %v, want the first stderr line", err)
+	}
+}
+
 func TestHostOf(t *testing.T) {
 	cases := map[string]string{
 		"user@login.example": "login.example",
