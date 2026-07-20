@@ -53,6 +53,7 @@ import (
 // convention — which dropped the helper while keeping the dispatchers that call it, leaving
 // every node shortcut a `command not found`. They're plain helpers; they take the plain `mu_`
 // prefix the rest of the layer uses.
+
 // nodeVerb is one node-targeted capability: its bare `<node> <verb>` name and the `mu` command
 // it runs. classAVerbs is the SINGLE source that generates all three invocation surfaces — the
 // m-door `m<verb>`, the `<node> <verb>` dispatcher arm, and the binary's own -N — so the three

@@ -60,7 +60,7 @@ func Run(sub string, args []string) int {
 
 // run execs one real archive invocation: `archive <sub> [-C cdir] <args…>` from
 // dir ("" = inherit). An injected -C also sets ARCHIVE_PROBE=yes (the native
-// before/after size verify); the explicit--C passthrough stays untouched.
+// before/after size verify); the explicit -C passthrough stays untouched.
 func run(bin, dir, cdir, sub string, args []string) int {
 	argv := []string{sub}
 	if cdir != "" {

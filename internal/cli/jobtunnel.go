@@ -119,11 +119,6 @@ func jobTunnelCmd() *cobra.Command {
 	return c
 }
 
-// jobShellCmd is `mu job shell`: an interactive allocation on a compute node —
-// the scheduler's own qsub -I / salloc under a real tty (RemoteExec is tty-less
-// by design, so this path builds its own `ssh -t`). The tunnel's sibling: shell
-// = you on the node, tunnel = a service's port. FUTURE: -p adds a tunnel to the
-// allocated node once the scheduler names it (the mux makes that composable).
 // shellAlloc holds the flags shared by `mu job shell` and `mu job harness open`: both request
 // the same interactive allocation, and only the wrapping (bare vs inside tmux) differs.
 type shellAlloc struct {
@@ -179,6 +174,11 @@ func runShellAlloc(o *shellAlloc, dir string) error {
 	return jobInteractive(o.node, o.account, o.walltime, dir, o.nodes, &o.sel)
 }
 
+// jobShellCmd is `mu job shell`: an interactive allocation on a compute node —
+// the scheduler's own qsub -I / salloc under a real tty (RemoteExec is tty-less
+// by design, so this path builds its own `ssh -t`). The tunnel's sibling: shell
+// = you on the node, tunnel = a service's port. FUTURE: -p adds a tunnel to the
+// allocated node once the scheduler names it (the mux makes that composable).
 func jobShellCmd() *cobra.Command {
 	var o shellAlloc
 	c := &cobra.Command{

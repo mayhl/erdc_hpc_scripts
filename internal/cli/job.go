@@ -433,9 +433,6 @@ func queueCPN(label, queueName string) int {
 	return config.CoresPerNodeFor(label)
 }
 
-// classQueues is the pure core of the live class-flag fallback: the up, submittable
-// queues on label whose node class matches — the config queue_class override first,
-// the name heuristic else. Input order preserved.
 // resolveLiteralQueue turns a purpose key (debug/background) into a queue the machine
 // actually HAS. The conventional name is a convention, not a guarantee — a SLURM site may
 // have no partition called "debug" at all, and `salloc -p debug` then dies with "invalid
@@ -474,6 +471,9 @@ func resolveLiteralQueue(label, key, literal string, qs []queue.QueueInfo) (stri
 	}
 }
 
+// classQueues is the pure core of the live class-flag fallback: the up, submittable
+// queues on label whose node class matches — the config queue_class override first,
+// the name heuristic else. Input order preserved.
 func classQueues(label, class string, qs []queue.QueueInfo) []string {
 	up, _ := upQueues(execQueues(qs))
 	var names []string

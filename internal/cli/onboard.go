@@ -243,7 +243,6 @@ Next steps on %s:
 `, target, o.shellKind, binHome, rootHome, o.shellKind, rootHome)
 }
 
-// ssh runs a mutating remote command, echoing it first; under --dry-run it only echoes.
 // push copies local → target:remote over ssh, writing a temp file then `mv`-ing it over
 // the target. Two reasons not to scp straight onto remote: (1) modern scp rides the SFTP
 // subsystem, which DoD/HPC servers often disable (scp dies with a bare exit 1), whereas a
@@ -271,6 +270,7 @@ func (o *onboard) push(target, local, remote string) error {
 	return nil
 }
 
+// ssh runs a mutating remote command, echoing it first; under --dry-run it only echoes.
 func (o *onboard) ssh(target, remote string) error {
 	if o.dryRun {
 		render.Detail("[dry] ssh " + target + " " + remote)

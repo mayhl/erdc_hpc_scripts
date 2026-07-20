@@ -162,15 +162,15 @@ func narrowTier(root, path string) (syncTier, error) {
 	return syncTier{}, fmt.Errorf("%s is not under a syncable tier (%s)", rel, strings.Join(rels, ", "))
 }
 
+// fleetAuto is the sentinel --fleet takes with no value (pflag NoOptDefVal): resolve
+// the fleet from the project's markers/.mu-fleet rather than an explicit list.
+const fleetAuto = "@auto"
+
 // projectSyncCmd is `mu project sync <node>`: the production-run data path. It pushes
 // the project's SHARED-zone run-dependency data (simulations/data) to a cluster's
 // $WORKDIR at the same $HOME-relative path, additively — new files transfer, existing
 // files are never overwritten (add-only house rule). Differing files are reported and
 // skipped, not resolved. Distinct from submit-iterate's disposable case staging.
-// fleetAuto is the sentinel --fleet takes with no value (pflag NoOptDefVal): resolve
-// the fleet from the project's markers/.mu-fleet rather than an explicit list.
-const fleetAuto = "@auto"
-
 func projectSyncCmd() *cobra.Command {
 	var yes, dryRun, force, checksum, verify bool
 	var tierSel, exclude []string
