@@ -199,7 +199,14 @@ func RemoteExecTimeout(target, remoteCmd string, timeout time.Duration) (string,
 	if connTO < 1 {
 		connTO = 1
 	}
-	cmd := exec.CommandContext(ctx, ssh, "-q", "-o", fmt.Sprintf("ConnectTimeout=%d", connTO), target, arg)
+	// Same ambient ControlMaster as RemoteExec: the collate fan-out otherwise pays a
+	// full Kerberos auth per call — twice per target when the hooks fetch runs beside
+	// the snapshot. A deadline-killed client can't strand the master (ssh forks it,
+	// ControlPersist expires it).
+	args := []string{"-q", "-o", fmt.Sprintf("ConnectTimeout=%d", connTO)}
+	args = append(args, controlArgs(target)...)
+	args = append(args, target, arg)
+	cmd := exec.CommandContext(ctx, ssh, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
