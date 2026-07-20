@@ -55,7 +55,7 @@ var (
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if sshStubDir != "" {
-		os.RemoveAll(sshStubDir)
+		_ = os.RemoveAll(sshStubDir)
 	}
 	os.Exit(code)
 }
