@@ -16,7 +16,7 @@ import (
 // collateTimeout bounds each cluster's fetch during --all fan-out — long enough for
 // ssh + Kerberos + login-profile + squeue, short enough that a wedged cluster
 // doesn't stall the whole collate.
-const collateTimeout = 20 * time.Second
+const collateTimeout = 30 * time.Second
 
 // clusterResult is one cluster's collate outcome: its jobs (plus any model-hook
 // progress, keyed by short id), or the error that dropped it (unreachable,
