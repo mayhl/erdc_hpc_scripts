@@ -315,20 +315,80 @@ func (m selectModel) updateFilter(msg tea.KeyPressMsg) selectModel {
 }
 
 // recompute rebuilds the visible set from the facet filter (an exact match on the
-// FacetCol cell) and the text filter (case-insensitive substring over the ID + all
-// cells), then resets the cursor to the top.
+// FacetCol cell) and the text filter, then resets the cursor to the top. The text
+// filter splits on spaces into ANDed tokens; a `col:val` token scopes its substring
+// to one column (see parseFilter), any other token searches the ID + all cells.
 func (m *selectModel) recompute() {
-	q := strings.ToLower(m.filter)
+	toks := parseFilter(m.filter, m.spec.Columns)
 	m.visible = m.visible[:0]
 	for i, r := range m.rows {
 		if m.facetVal != "" && m.facetCell(r) != m.facetVal {
 			continue
 		}
-		if q == "" || strings.Contains(strings.ToLower(r.ID+" "+strings.Join(r.Cells, " ")), q) {
+		if rowMatches(r, toks) {
 			m.visible = append(m.visible, i)
 		}
 	}
 	m.cursor, m.top = 0, 0
+}
+
+// filterTok is one ANDed filter word: a lowercase substring, scoped to a single
+// 1-based column when col > 0 (0 = anywhere in ID + cells).
+type filterTok struct {
+	col int
+	q   string
+}
+
+// parseFilter resolves the filter box into tokens. A `col:val` word scopes val to
+// the column whose header matches col case-insensitively — exact first, else a
+// unique prefix (`u:dave` → USER). No or ambiguous match → the WHOLE word stays a
+// plain substring, so colons in ids/names never make rows vanish.
+func parseFilter(filter string, cols []string) []filterTok {
+	var toks []filterTok
+	for _, w := range strings.Fields(strings.ToLower(filter)) {
+		if c, v, ok := strings.Cut(w, ":"); ok && v != "" {
+			if idx := matchColumn(c, cols); idx > 0 {
+				toks = append(toks, filterTok{col: idx, q: v})
+				continue
+			}
+		}
+		toks = append(toks, filterTok{q: w})
+	}
+	return toks
+}
+
+// matchColumn is the 1-based header index for a lowercase column token: exact
+// lowercase match, else a UNIQUE prefix; 0 = no match (ambiguous counts as none).
+func matchColumn(name string, cols []string) int {
+	prefix, nprefix := 0, 0
+	for i, h := range cols {
+		h = strings.ToLower(h)
+		if h == name {
+			return i + 1
+		}
+		if strings.HasPrefix(h, name) {
+			prefix, nprefix = i+1, nprefix+1
+		}
+	}
+	if nprefix == 1 {
+		return prefix
+	}
+	return 0
+}
+
+// rowMatches ANDs every token against a row; a column-scoped token misses when the
+// row is too short for its column.
+func rowMatches(r SelectRow, toks []filterTok) bool {
+	for _, t := range toks {
+		if t.col > 0 {
+			if t.col > len(r.Cells) || !strings.Contains(strings.ToLower(r.Cells[t.col-1]), t.q) {
+				return false
+			}
+		} else if !strings.Contains(strings.ToLower(r.ID+" "+strings.Join(r.Cells, " ")), t.q) {
+			return false
+		}
+	}
+	return true
 }
 
 // facetCell returns a row's FacetCol value ("" when the facet is disabled or the row is

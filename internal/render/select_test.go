@@ -97,6 +97,49 @@ func TestDetailMsgOpensOverlay(t *testing.T) {
 	}
 }
 
+// The filter grammar: words AND together; a `col:val` word scopes to its column by
+// exact-or-unique-prefix header match; an unresolvable col part stays a plain substring.
+func TestSelectColumnTokenFilter(t *testing.T) {
+	cols := []string{"ID", "USER", "QUEUE", "ST", "SUBJECT"}
+	rows := []SelectRow{
+		row("1", "1", "dave", "standard", "R", "wave_run"),
+		row("2", "2", "erin", "debug", "Q", "dave_restart"),
+	}
+	m := newSelectModel(SelectSpec{Columns: cols, Fetch: func() []SelectRow { return nil }}, rows)
+
+	cases := []struct {
+		filter string
+		want   []string
+	}{
+		{"dave", []string{"1", "2"}},      // plain word: anywhere (user OR subject)
+		{"user:dave", []string{"1"}},      // exact header scopes to the column
+		{"u:dave", []string{"1"}},         // unique prefix resolves (only USER starts with u)
+		{"s:r", nil},                      // ambiguous prefix (ST/SUBJECT) → whole word stays literal, matches nothing
+		{"queue:bug", []string{"2"}},      // substring within the scoped column
+		{"user:dave st:r", []string{"1"}}, // tokens AND across columns
+		{"http://x", nil},                 // unresolvable col part stays literal, matches nothing
+		{"dave standard", []string{"1"}},  // plain words AND (was: literal spanning substring)
+	}
+	for _, c := range cases {
+		m.filter = c.filter
+		m.recompute()
+		var got []string
+		for _, i := range m.visible {
+			got = append(got, m.rows[i].ID)
+		}
+		if len(got) != len(c.want) {
+			t.Errorf("filter %q: visible %v, want %v", c.filter, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("filter %q: visible %v, want %v", c.filter, got, c.want)
+				break
+			}
+		}
+	}
+}
+
 // The facet key cycles the list through a column's distinct values (all → v1 → … → all)
 // and the recompute filters visible rows to the active value.
 func TestSelectFacetCycle(t *testing.T) {
