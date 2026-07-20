@@ -468,8 +468,14 @@ func caseLeaves(dir string) (leaves []string, others int) {
 	return leaves, others
 }
 
-// duBytes is the best-effort recursive size of dir for the tier thresholds.
+// duBytes is the best-effort recursive size of dir for the tier thresholds. Memoized
+// per path for the run: planDir sizes every leaf for the batch-tier check and leafPack
+// re-asks for the same leaves — on Lustre the metadata walk is the slow part, and one
+// pass per leaf is enough (planning reads a snapshot anyway).
 func duBytes(dir string) int64 {
+	if v, ok := duMemo[dir]; ok {
+		return v
+	}
 	var total int64
 	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -482,8 +488,11 @@ func duBytes(dir string) int64 {
 		}
 		return nil
 	})
+	duMemo[dir] = total
 	return total
 }
+
+var duMemo = map[string]int64{}
 
 func hasArg(args []string, want string) bool {
 	for _, a := range args {
