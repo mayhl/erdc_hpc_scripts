@@ -130,6 +130,7 @@ type selectModel struct {
 	facetVal      string // active FacetCol filter value; "" = all (no facet filter)
 	detail        string // inspect overlay text; "" = list view
 	detailLoading bool   // Detail fetch in flight (overlay shows a spinner-less notice)
+	fetching      bool   // tick refresh in flight (skip further ticks until it lands)
 	interval      time.Duration
 	width, height int
 	confirmed     bool
@@ -160,14 +161,22 @@ func tickCmd(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-// refresh re-fetches the list, keeping the filter, ID-keyed selection, and the
-// cursor's ID (so a row doesn't jump under you as the list changes).
-func (m *selectModel) refresh() {
+// rowsMsg carries a tick refresh's fetched rows back onto the UI loop — the fetch
+// itself runs in a Cmd (it may spawn git or ssh), so the picker never freezes on it.
+type rowsMsg struct{ rows []SelectRow }
+
+func fetchRowsCmd(fn func() []SelectRow) tea.Cmd {
+	return func() tea.Msg { return rowsMsg{fn()} }
+}
+
+// applyRows swaps in freshly fetched rows, keeping the filter, ID-keyed selection,
+// and the cursor's ID (so a row doesn't jump under you as the list changes).
+func (m *selectModel) applyRows(rows []SelectRow) {
 	curID := ""
 	if m.cursor < len(m.visible) {
 		curID = m.rows[m.visible[m.cursor]].ID
 	}
-	m.rows = m.spec.Fetch()
+	m.rows = rows
 	m.recompute() // resets cursor/top to 0
 	if curID != "" {
 		for i, idx := range m.visible {
@@ -186,10 +195,17 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.clampScroll()
 	case tickMsg:
-		if !m.filtering && m.detail == "" && !m.detailLoading { // don't churn under the filter box or the overlay
-			m.refresh()
+		if !m.filtering && m.detail == "" && !m.detailLoading && !m.fetching { // don't churn under the filter box or the overlay
+			m.fetching = true
+			return m, tea.Batch(fetchRowsCmd(m.spec.Fetch), tickCmd(m.interval))
 		}
 		return m, tickCmd(m.interval)
+	case rowsMsg:
+		m.fetching = false
+		if !m.filtering && m.detail == "" && !m.detailLoading { // a stale landing under the filter box would yank the cursor
+			m.applyRows(msg.rows)
+		}
+		return m, nil
 	case detailMsg:
 		m.detailLoading = false
 		m.detail = msg.text

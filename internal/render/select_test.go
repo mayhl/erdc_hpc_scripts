@@ -15,7 +15,7 @@ func TestRefreshKeepsSelectionByID(t *testing.T) {
 	m.selected["200"] = true
 	m.cursor = 1 // on ID 200
 
-	m.refresh()
+	m.applyRows(rows2)
 
 	if len(m.rows) != 2 || m.rows[0].ID != "200" {
 		t.Fatalf("refresh didn't swap in the new snapshot: %+v", m.rows)
@@ -52,7 +52,7 @@ func TestRefreshHonorsFilter(t *testing.T) {
 	if len(m.visible) != 1 || m.rows[m.visible[0]].ID != "2" {
 		t.Fatalf("filter not applied: %+v", m.visible)
 	}
-	m.refresh()
+	m.applyRows(rows)
 	if len(m.visible) != 1 || m.rows[m.visible[0]].ID != "2" {
 		t.Errorf("refresh dropped the active filter: visible=%+v", m.visible)
 	}

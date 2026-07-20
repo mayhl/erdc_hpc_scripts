@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -117,6 +118,7 @@ func gitReviewedPick() error {
 		Verb:     "un-tag through",
 		Columns:  []string{"N", "HASH", "SUBJECT"},
 		Fetch:    fetch,
+		Interval: 30 * time.Second, // the repo can't change mid-pick; refresh is a safety net
 		PickOne:  true,
 		StderrUI: true,
 		Preview:  true, // live pane follows the cursor; `i` keeps the full overlay
