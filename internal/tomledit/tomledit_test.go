@@ -193,6 +193,102 @@ func TestInsertTable(t *testing.T) {
 	}
 }
 
+// splitDoc exercises the seam grammar: root lines, an unnamed kept table, a seam whose
+// subtable must travel with it, and an [[array]] header cutting capture back to rest.
+const splitDoc = `hpc_user = "someuser"
+fleet = ["node-a"]
+
+[transfer]
+rsync_opts = "-au"
+
+[ssh]
+ossh = "/laptop/ossh"
+
+[ssh.sub]
+port = 22
+
+[[cluster]]
+name = "dsrc1"
+
+[sshfs]
+root = "/laptop/mnt"
+`
+
+func TestSplit(t *testing.T) {
+	rest, secs := Split(splitDoc, "ssh", "sshfs")
+
+	// root (pre-header) lines and unnamed tables stay in rest, verbatim; the [[cluster]]
+	// header is a seam boundary — it ends the ssh capture and returns lines to rest
+	wantRest := "hpc_user = \"someuser\"\nfleet = [\"node-a\"]\n\n[transfer]\nrsync_opts = \"-au\"\n\n[[cluster]]\nname = \"dsrc1\"\n\n"
+	if rest != wantRest {
+		t.Errorf("rest = %q\nwant %q", rest, wantRest)
+	}
+	// [ssh.sub] travels with its parent seam — rootPath keys both under "ssh"
+	wantSSH := "[ssh]\nossh = \"/laptop/ossh\"\n\n[ssh.sub]\nport = 22\n\n"
+	if secs["ssh"] != wantSSH {
+		t.Errorf("ssh section = %q\nwant %q", secs["ssh"], wantSSH)
+	}
+	if want := "[sshfs]\nroot = \"/laptop/mnt\"\n\n"; secs["sshfs"] != want {
+		t.Errorf("sshfs section = %q\nwant %q", secs["sshfs"], want)
+	}
+
+	// a NAMED [[array]] captures every repeat into one section, child [[cluster.node]]
+	// blocks included, even across an intervening kept table
+	arrayDoc := "top = 1\n\n[[cluster]]\nname = \"a\"\n\n  [[cluster.node]]\n  name = \"n1\"\n\n[ssh]\nx = 1\n\n[[cluster]]\nname = \"b\"\n"
+	rest, secs = Split(arrayDoc, "cluster")
+	if want := "top = 1\n\n[ssh]\nx = 1\n\n"; rest != want {
+		t.Errorf("array rest = %q\nwant %q", rest, want)
+	}
+	wantCluster := "[[cluster]]\nname = \"a\"\n\n  [[cluster.node]]\n  name = \"n1\"\n\n[[cluster]]\nname = \"b\"\n\n"
+	if secs["cluster"] != wantCluster {
+		t.Errorf("cluster section = %q\nwant %q", secs["cluster"], wantCluster)
+	}
+}
+
+func TestAssemble(t *testing.T) {
+	secs := map[string]string{
+		"ssh":   "[ssh]\nossh = \"/box/ossh\"\n\n",
+		"sshfs": "\n  \n", // whitespace-only: a seam the destination never had
+	}
+	// exact spacing: body trimmed to one trailing newline, one blank line before each kept
+	// section; whitespace-only and absent sections are skipped, not emitted
+	got := Assemble("hpc_user = \"someuser\"\n\n\n", secs, "ssh", "sshfs", "ghost")
+	if want := "hpc_user = \"someuser\"\n\n[ssh]\nossh = \"/box/ossh\"\n"; got != want {
+		t.Errorf("Assemble = %q\nwant %q", got, want)
+	}
+
+	// the order parameter, not map order, decides placement
+	secs = map[string]string{"a": "[a]\nx = 1\n", "b": "[b]\ny = 2\n"}
+	got = Assemble("r = 0\n", secs, "b", "a")
+	if want := "r = 0\n\n[b]\ny = 2\n\n[a]\nx = 1\n"; got != want {
+		t.Errorf("Assemble order = %q\nwant %q", got, want)
+	}
+}
+
+// seamDoc is the canonical synced shape — seams last, one blank line between blocks,
+// single trailing newline — the layout Assemble(Split(…)) must reproduce byte-for-byte.
+const seamDoc = `hpc_user = "someuser"
+
+[[cluster]]
+name = "dsrc1"
+
+[ssh]
+ossh = "/laptop/ossh"
+
+[ssh.sub]
+port = 22
+
+[sshfs]
+root = "/laptop/mnt"
+`
+
+func TestSplitAssembleRoundTrip(t *testing.T) {
+	rest, secs := Split(seamDoc, "ssh", "sshfs")
+	if got := Assemble(rest, secs, "ssh", "sshfs"); got != seamDoc {
+		t.Errorf("round-trip changed the file:\n%q\nwant:\n%q", got, seamDoc)
+	}
+}
+
 func TestDeleteTable(t *testing.T) {
 	d := Parse(clusterDoc)
 	nb := d.Find("cluster.node", "name", "node-b")
