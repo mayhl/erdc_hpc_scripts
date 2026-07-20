@@ -42,7 +42,11 @@ import (
 // and a printf was the one help text in mu that didn't look like mu.
 //
 // Remote-exec runs `bash -lc` (login shell) so HPC modules/scheduler load from
-// /etc/profile.d — which `zsh -l` does NOT source. That login profile spews a
+// /etc/profile.d — which `zsh -l` does NOT source. The joined args are passed
+// through printf %q so the remote outer shell unescapes exactly once and bash -lc
+// parses the verbatim command line — quotes/parens/$ in args survive, and globs
+// expand REMOTELY, not at the remote outer-shell layer (a bare "\"$*\"" wrapper
+// double-expanded and broke on embedded quotes). That login profile spews a
 // benign dbus/X11 error over non-interactive ssh; it's filtered from stderr via
 // MU_SSH_STDERR_FILTER (default drops that message; process substitution keeps the
 // command's exit code and lets real errors through). TEMPORARY workaround for the
@@ -108,7 +112,7 @@ mu_node() {
     pull) shift; mu cp pull "$node" "$@" ;;
 `
 
-const dispatcherTail = `    exec|--) shift; mu_auth && ${MU_SSH:-ssh} -q "$target" "bash -lc \"$*\"" 2> >(grep -vE "${MU_SSH_STDERR_FILTER:-dbus-update-activation-environment|^Cannot continue}" >&2) ;;
+const dispatcherTail = `    exec|--) shift; mu_auth && ${MU_SSH:-ssh} -q "$target" "bash -lc $(printf '%q' "$*")" 2> >(grep -vE "${MU_SSH_STDERR_FILTER:-dbus-update-activation-environment|^Cannot continue}" >&2) ;;
     "")   mu_auth && mu_ssh_login "$target" ;;
     *)
       case $1 in
@@ -118,7 +122,7 @@ const dispatcherTail = `    exec|--) shift; mu_auth && ${MU_SSH:-ssh} -q "$targe
       if [ "$#" -eq 0 ]; then
         mu_auth && mu_ssh_login "$target"
       else
-        mu_auth && ${MU_SSH:-ssh} -q "$target" "bash -lc \"$*\"" 2> >(grep -vE "${MU_SSH_STDERR_FILTER:-dbus-update-activation-environment|^Cannot continue}" >&2)
+        mu_auth && ${MU_SSH:-ssh} -q "$target" "bash -lc $(printf '%q' "$*")" 2> >(grep -vE "${MU_SSH_STDERR_FILTER:-dbus-update-activation-environment|^Cannot continue}" >&2)
       fi
       ;;
   esac

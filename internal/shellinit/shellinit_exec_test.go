@@ -64,6 +64,7 @@ hpc1 hold 5
 hpc1 tunnel
 hpc1 exec usage
 hpc1 -- queues
+hpc1 exec ls '250_*.tar' '(A)'
 hpc1 -h
 `
 	script := filepath.Join(dir, "driver.sh")
@@ -89,8 +90,12 @@ hpc1 -h
 		"MU hpc queue hold --node hpc1 5", // hold sub-verb with a selector
 		"MU job tunnel --node hpc1",       // job-plane node-first
 		// ...and `exec` / `--` force remote-exec of a word that is otherwise reserved.
-		"SSH alice@hpc1.alpha.example.mil :: bash -lc \"usage\"",
-		"SSH alice@hpc1.alpha.example.mil :: bash -lc \"queues\"",
+		// The joined args ride through printf %q — a plain word arrives bare, and
+		// locally-quoted globs/parens survive to the remote bash -lc parse (the old
+		// \"$*\" wrapper broke on them).
+		"SSH alice@hpc1.alpha.example.mil :: bash -lc usage",
+		"SSH alice@hpc1.alpha.example.mil :: bash -lc queues",
+		`250_\*.tar`,
 		"MU setup node-help hpc1", // -h calls back into mu for the house panel
 		"real-error-boom",         // a real stderr line survives the filter
 	}
