@@ -174,3 +174,31 @@ func TestCapErr(t *testing.T) {
 		t.Errorf("capped block is %d lines, want %d", len(got), 2+errTailCap+1)
 	}
 }
+
+// An over-cap payload spills to payload-<id>.json and the log line keeps only the
+// pointer stub; a within-cap payload stays inline untouched.
+func TestEmitPayloadCap(t *testing.T) {
+	dir := t.TempDir()
+	logf := filepath.Join(dir, "events.log")
+	t.Setenv("MU_LOG_FILE", logf)
+	ResetLoggerForTest()
+
+	big := strings.Repeat("x", payloadCap) // whole record marshals past the cap
+	id := Emit("cp", "ok", "huge", map[string]any{"blob": big})
+
+	got := readFile(t, logf)
+	if strings.Contains(got, big) {
+		t.Fatal("over-cap payload stored inline instead of spilling")
+	}
+	if !strings.Contains(got, `"spill":"`) || !strings.Contains(got, `"id":"`+id+`"`) {
+		t.Errorf("stub missing spill/id:\n%s", got)
+	}
+	spill := filepath.Join(dir, "payload-"+id+".json")
+	b, err := os.ReadFile(spill)
+	if err != nil {
+		t.Fatalf("spill file unreadable: %v", err)
+	}
+	if !strings.Contains(string(b), big) || !strings.Contains(string(b), `"id":"`+id+`"`) {
+		t.Error("spill file doesn't carry the full payload")
+	}
+}

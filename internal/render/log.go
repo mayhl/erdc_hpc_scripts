@@ -298,11 +298,36 @@ func emit(level slog.Level, scope, msg string, quiet bool, payload map[string]an
 		}
 		rec["id"] = id
 		if b, err := json.Marshal(rec); err == nil {
-			attrs = append(attrs, slog.String("payload", string(b)))
+			attrs = append(attrs, slog.String("payload", capPayload(b, id)))
 		}
 	}
 	base().LogAttrs(context.Background(), level, msg, attrs...)
 	return id
+}
+
+// payloadCap bounds an inline event payload. The curated log stays single-digit MB
+// over years only if no single record can balloon it — an over-cap payload spills
+// to payload-<id>.json beside the log and the record keeps a pointer stub (id,
+// spill path, byte count). Mirrors the Err tail-cap pattern (err-<id>.log).
+const payloadCap = 8 * 1024
+
+// capPayload returns the inline payload string for a marshaled record: verbatim
+// within the cap, else the stub after spilling the full JSON. A failed spill keeps
+// the payload inline — logging must never lose data it was handed.
+func capPayload(b []byte, id string) string {
+	if len(b) <= payloadCap {
+		return string(b)
+	}
+	dir := filepath.Dir(eventLogPath())
+	path := filepath.Join(dir, "payload-"+id+".json")
+	if os.MkdirAll(dir, 0o755) != nil || os.WriteFile(path, append(b, '\n'), 0o644) != nil {
+		return string(b)
+	}
+	stub, err := json.Marshal(map[string]any{"id": id, "spill": path, "bytes": len(b)})
+	if err != nil {
+		return string(b)
+	}
+	return string(stub)
 }
 
 // event appends a log-only record (quiet — no terminal render) for commands that
