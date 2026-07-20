@@ -49,7 +49,11 @@ func projectSubmitCmd() *cobra.Command {
 			"so the run has its dependencies; --no-sync skips it when they're already staged.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return projectSubmit(node, args[0], script, account, queue_, yes, dryRun, render.IsVerbose(), keep, clean, force, noSync, hours)
+			return projectSubmit(args[0], projSubmitOpts{
+				node: node, script: script, account: account, queue: queue_,
+				yes: yes, dryRun: dryRun, verbose: render.IsVerbose(),
+				keep: keep, clean: clean, force: force, noSync: noSync, hours: hours,
+			})
 		},
 	}
 	setHelpArgs(c, [2]string{"<case-dir>", "case directory to push and run (under $HOME, inside a git project)"})
@@ -80,10 +84,27 @@ var stageProtect = []string{
 	"--filter=P /" + project.StampFile,
 }
 
+// projSubmitOpts bundles projectSubmit's knobs — the flag surface of
+// `mu project submit` (the case dir stays the positional arg).
+type projSubmitOpts struct {
+	node    string
+	script  string
+	account string
+	queue   string  // -q selector: partition, or partition:qos
+	hours   float64 // node-hours estimate for the allocation pre-flight
+	yes     bool
+	dryRun  bool
+	verbose bool
+	keep    bool // keep stale staging files (skip rsync --delete)
+	clean   bool // study phase: push the committed branch, stage node-side
+	force   bool // override the case's node-lock marker
+	noSync  bool // --clean only: skip the shared-data sync leg
+}
+
 // projectSubmit is the push-and-run pipeline: resolve → preview+confirm → get
 // the case into $WORK staging (iterate: laptop rsync; clean: git push + node-side
 // copy) → stamp + submit.
-func projectSubmit(node, caseDir, script, account, queue_ string, yes, dryRun, verbose, keep, clean, force, noSync bool, hours float64) error {
+func projectSubmit(caseDir string, o projSubmitOpts) error {
 	caseAbs, err := filepath.Abs(caseDir)
 	if err != nil {
 		return usageErr("%s", err)
@@ -91,7 +112,7 @@ func projectSubmit(node, caseDir, script, account, queue_ string, yes, dryRun, v
 	if fi, err := os.Stat(caseAbs); err != nil || !fi.IsDir() {
 		return usageErr("%s is not a directory", caseDir)
 	}
-	if node == "" {
+	if o.node == "" {
 		return usageErr("needs --node <cluster> — submit runs from the authoring machine")
 	}
 	root, err := project.FindRoot(caseAbs)
@@ -108,38 +129,38 @@ func projectSubmit(node, caseDir, script, account, queue_ string, yes, dryRun, v
 	if err != nil {
 		return usageErr("%s", err)
 	}
-	if locked && lock != node {
-		if !force {
+	if locked && lock != o.node {
+		if !o.force {
 			rel, _ := filepath.Rel(root, marker)
-			return usageErr("case is locked to %s (%s) — submitting to %s is refused; --force to override or edit the marker", lock, rel, node)
+			return usageErr("case is locked to %s (%s) — submitting to %s is refused; --force to override or edit the marker", lock, rel, o.node)
 		}
-		render.Warn(fmt.Sprintf("overriding node-lock: %s marks this case for %s, submitting to %s", project.AffinityFile, lock, node))
+		render.Warn(fmt.Sprintf("overriding node-lock: %s marks this case for %s, submitting to %s", project.AffinityFile, lock, o.node))
 	}
-	if _, err := os.Stat(filepath.Join(caseAbs, script)); err != nil {
-		return usageErr("script %s not found in %s", script, caseDir)
+	if _, err := os.Stat(filepath.Join(caseAbs, o.script)); err != nil {
+		return usageErr("script %s not found in %s", o.script, caseDir)
 	}
 	rel, err := project.HomeRel(caseAbs)
 	if err != nil {
 		return usageErr("%s", err)
 	}
-	target, err := hpc.Resolve(node)
+	target, err := hpc.Resolve(o.node)
 	if err != nil {
 		return usageErr("%s", err)
 	}
-	scheduler := config.SchedulerFor(node)
+	scheduler := config.SchedulerFor(o.node)
 	adapter := queue.For(scheduler)
 	if adapter == nil {
-		return errNoScheduler(node)
+		return errNoScheduler(o.node)
 	}
-	if account == "" {
-		account = config.AccountFor(node)
+	if o.account == "" {
+		o.account = config.AccountFor(o.node)
 	}
-	part, qos := submitTarget(node, queue_)
-	opts := queue.SubmitOpts{Account: account, Queue: part, QOS: qos}
-	submitCmd := adapter.SubmitCmd(script, opts)
+	part, qos := submitTarget(o.node, o.queue)
+	opts := queue.SubmitOpts{Account: o.account, Queue: part, QOS: qos}
+	submitCmd := adapter.SubmitCmd(o.script, opts)
 	stamp := project.NewStamp(caseAbs)
 	branch := ""
-	if clean {
+	if o.clean {
 		// The study-phase gates: a real commit, a clean tree, a branch to push.
 		if stamp.Commit == "" {
 			return usageErr("--clean needs a commit — the run must be reproducible from a sha")
@@ -153,13 +174,13 @@ func projectSubmit(node, caseDir, script, account, queue_ string, yes, dryRun, v
 	}
 
 	mode := "iterate"
-	if clean {
+	if o.clean {
 		mode = "clean"
 	}
-	render.Info(fmt.Sprintf("Submit case → %s (%s, %s)", node, scheduler, mode))
+	render.Info(fmt.Sprintf("Submit case → %s (%s, %s)", o.node, scheduler, mode))
 	render.Detail("case:    " + rel)
 	render.Detail("stage:   $WORKDIR/" + rel)
-	render.Detail("script:  " + script)
+	render.Detail("script:  " + o.script)
 	if stamp.Commit != "" {
 		render.Detail(fmt.Sprintf("origin:  %.12s dirty=%v", stamp.Commit, stamp.Dirty))
 	} else {
@@ -171,16 +192,16 @@ func projectSubmit(node, caseDir, script, account, queue_ string, yes, dryRun, v
 		render.Detail("applies: (scheduler defaults / script directives)")
 	}
 	render.Detail("command: " + submitCmd)
-	if clean && !noSync {
+	if o.clean && !o.noSync {
 		render.Detail("data:    sync simulations/data → $WORKDIR (add-only; --no-sync to skip)")
 	}
-	hoursPreflight(node, account, filepath.Join(caseAbs, script), hours, !dryRun)
-	if dryRun {
+	hoursPreflight(o.node, o.account, filepath.Join(caseAbs, o.script), o.hours, !o.dryRun)
+	if o.dryRun {
 		render.Info("dry run — nothing pushed or submitted")
 		return nil
 	}
-	if !yes {
-		if !confirm("push + submit to %s?", node) {
+	if !o.yes {
+		if !confirm("push + submit to %s?", o.node) {
 			render.Info("aborted")
 			return nil
 		}
@@ -193,8 +214,8 @@ func projectSubmit(node, caseDir, script, account, queue_ string, yes, dryRun, v
 	// node before the job runs. Additive + add-only — a no-op when already present, and a
 	// differing input is skipped+warned, never overwritten. yes=true: the submit confirm
 	// above already covered it. --no-sync opts out (data staged by hand).
-	if clean && !noSync {
-		if err := syncShared(root, projSyncOpts{node: node, yes: true, verbose: verbose}); err != nil {
+	if o.clean && !o.noSync {
+		if err := syncShared(root, projSyncOpts{node: o.node, yes: true, verbose: o.verbose}); err != nil {
 			return err
 		}
 	}
@@ -203,29 +224,29 @@ func projectSubmit(node, caseDir, script, account, queue_ string, yes, dryRun, v
 	qrel := shell.Quote(rel)
 	out, err := hpc.RemoteExec(target, fmt.Sprintf(`mkdir -p "$WORKDIR"/%s && cd "$WORKDIR"/%s && pwd`, qrel, qrel))
 	if err != nil {
-		return runErr("%s: staging dir: %s", node, err)
+		return runErr("%s: staging dir: %s", o.node, err)
 	}
 	stage := strings.TrimSpace(out)
 	if stage == "" {
-		return runErr("%s: staging dir: empty $WORKDIR resolution", node)
+		return runErr("%s: staging dir: empty $WORKDIR resolution", o.node)
 	}
 
 	// Leg 2: get the case into staging — iterate rsyncs the working tree from
 	// the laptop; clean pushes the branch through the per-node remote
 	// (updateInstead refreshes the $HOME clone) and stages node-side.
-	if clean {
-		if err := cleanStage(node, target, root, branch, rel, stage, keep); err != nil {
+	if o.clean {
+		if err := cleanStage(o.node, target, root, branch, rel, stage, o.keep); err != nil {
 			return err
 		}
 	} else {
 		// Rides the ambient master the legs on either side already share, so staging
 		// doesn't authenticate a connection of its own between them.
-		o := rsync.Opts{Delete: !keep, PartialDir: true, Transport: hpc.AmbientTransport(target)}
-		if !keep {
-			o.Ropt = stageProtect
+		ro := rsync.Opts{Delete: !o.keep, PartialDir: true, Transport: hpc.AmbientTransport(target)}
+		if !o.keep {
+			ro.Ropt = stageProtect
 		}
-		label := "stage " + node
-		code, _ := rsync.Run(rsync.BuildArgs(caseAbs+"/", target+":"+stage+"/", o), label, verbose)
+		label := "stage " + o.node
+		code, _ := rsync.Run(rsync.BuildArgs(caseAbs+"/", target+":"+stage+"/", ro), label, o.verbose)
 		if code != 0 {
 			render.EventErr("project", fmt.Sprintf("%s FAILED (rsync exit %d)", label, code))
 			return codeErr(code)
@@ -236,12 +257,12 @@ func projectSubmit(node, caseDir, script, account, queue_ string, yes, dryRun, v
 	out, err = hpc.RemoteExec(target, fmt.Sprintf("cd %s && printf '%%s' %s > %s && %s",
 		shell.Quote(stage), shell.Quote(stamp.TOML()), project.StampFile, submitCmd))
 	if err != nil {
-		return runErr("%s: submit: %s", node, err)
+		return runErr("%s: submit: %s", o.node, err)
 	}
 	if s := strings.TrimSpace(out); s != "" {
 		render.Detail(s)
 	}
-	msg := "submitted " + rel + " → " + node
+	msg := "submitted " + rel + " → " + o.node
 	render.OK(msg)
 	render.EventOK("project", msg)
 	return nil
