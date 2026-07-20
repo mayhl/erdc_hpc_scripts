@@ -56,8 +56,8 @@ func queueKillCmd() *cobra.Command {
 }
 
 // mstatInteractive is `mstat -i`: pick jobs from one cluster's live queue, then hand
-// them to the SAME cancel path as headless `mdel`. Single-cluster (like mdel);
-// cross-cluster interactive picking is a later step. Off-HPC the fetch is a remote
+// them to the SAME cancel path as headless `mdel`. Single-cluster (like mdel); the
+// collate scopes go through mstatInteractiveCollate. Off-HPC the fetch is a remote
 // ssh round-trip, so the live refresh runs on a slow cadence.
 func mstatInteractive(node string, who userSel) error {
 	if !render.Interactive() {
@@ -79,7 +79,8 @@ func mstatInteractive(node string, who userSel) error {
 			jobs, _ := snapshot() // tolerate a blip; the picker keeps its last frame
 			return jobSelectRows(jobs)
 		},
-		Detail: func(id string) string { return jobDetailCard(scheduler, capture, id) },
+		Detail:  func(id string) string { return jobDetailCard(scheduler, capture, id) },
+		Preview: true, // live pane follows the cursor; `i` keeps the full scheduler card
 	})
 	if err != nil {
 		return err
@@ -107,6 +108,181 @@ func mstatInteractive(node string, who userSel) error {
 		return nil
 	}
 	return cancelJobs(label, scheduler, matched, run, false)
+}
+
+// mstatInteractiveCollate is `mstat -i -f/-e`: pick jobs across the collate view and
+// cancel each pick on its own cluster. Rows are keyed "cluster/fullid" (short ids can
+// collide across systems) behind a SYSTEM column the `f` facet cycles; `i` and the
+// cancel route through the pick's own cluster, whose scheduler dialect can differ.
+// The refresh re-collates WITHOUT the spinner (the TUI owns the screen) on a slow
+// tick — a full fan-out per tick is the price of a live fleet view.
+func mstatInteractiveCollate(all bool, who userSel) error {
+	if !render.Interactive() {
+		return fmt.Errorf("mstat -i needs a terminal (stdin is not a tty)")
+	}
+	targets, scope := scopeTargets(all)
+	if len(targets) == 0 {
+		if scope == "fleet" {
+			return usageErr("nothing in the fleet — set a `fleet = [...]` node list or `active = true` on a cluster, or use --all-systems")
+		}
+		return usageErr("no clusters configured — add clusters to config.toml")
+	}
+	if err := hpc.EnsureTicket(); err != nil {
+		return runErr("%s", err)
+	}
+	byCluster := make(map[string]queueTarget, len(targets))
+	for _, t := range targets {
+		byCluster[t.label] = t
+	}
+	snapshot := func() []queue.Job {
+		jobs, _, _ := mergeResults(collateFan(targets, who, false, nil))
+		return jobs
+	}
+	// Only the FIRST fetch runs before the TUI owns the screen — spin there so the
+	// fan-out wait reads as work, not a hang. Later fetches run off the UI loop,
+	// one in flight at a time, so the plain bool never races.
+	first := true
+	fetch := func() []render.SelectRow {
+		if !first {
+			return collateSelectRows(snapshot())
+		}
+		first = false
+		sp := render.NewSpinner(fmt.Sprintf("Collating queues (%d systems)", len(targets)))
+		sp.Start()
+		defer sp.Stop()
+		return collateSelectRows(snapshot())
+	}
+	ids, err := render.Select(render.SelectSpec{
+		Verb:       "cancel",
+		Columns:    []string{"SYSTEM", "ID", "USER", "QUEUE", "ST", "ELAP/WALL", "NAME"},
+		Interval:   30 * time.Second,
+		Fetch:      fetch,
+		Detail:     func(id string) string { return collateDetailCard(byCluster, id) },
+		Preview:    true,
+		FacetCol:   1,
+		FacetLabel: "system",
+	})
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		render.Info("nothing selected")
+		return nil
+	}
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	var matched []queue.Job
+	for _, j := range snapshot() { // re-resolve: a pick may have finished meanwhile
+		if want[j.Cluster+"/"+j.ID] {
+			matched = append(matched, j)
+		}
+	}
+	if len(matched) == 0 {
+		render.Info("selected jobs are no longer queued")
+		return nil
+	}
+	return cancelJobsAcross(byCluster, matched)
+}
+
+// collateSelectRows adapts collate-tagged jobs into picker rows: SYSTEM leads (blue,
+// like the table's System column) and the row ID carries the cluster qualifier the
+// cross-cluster actuator splits back out.
+func collateSelectRows(jobs []queue.Job) []render.SelectRow {
+	rows := make([]render.SelectRow, len(jobs))
+	for i, j := range jobs {
+		state := j.State.String()
+		if j.State == queue.Unknown {
+			state = strings.TrimSpace(j.RawState)
+		}
+		rows[i] = render.SelectRow{
+			ID:      j.Cluster + "/" + j.ID,
+			Cells:   []string{j.Cluster, j.ShortID, j.User, j.Queue, state, elapWall(j.Elapsed, j.ReqWall), j.Name},
+			Hues:    []string{render.HueLoc, render.HueID, render.HueUser, render.HueGroup, "", "", render.HueName},
+			Preview: jobPreview(j),
+		}
+	}
+	return rows
+}
+
+// collateDetailCard splits a cluster-qualified row id and fetches the job's full card
+// from ITS cluster — scheduler dialect and node both come from that target. Cluster
+// labels never contain "/", so the first slash is the seam (PBS ids carry dots and
+// brackets, not slashes).
+func collateDetailCard(byCluster map[string]queueTarget, rowID string) string {
+	cluster, jid, ok := strings.Cut(rowID, "/")
+	t, known := byCluster[cluster]
+	if !ok || !known {
+		return "unknown system for " + rowID
+	}
+	capture := func(c string) (string, error) {
+		target, err := hpc.Resolve(t.node)
+		if err != nil {
+			return "", err
+		}
+		return hpc.RemoteExecTimeout(target, c, collateTimeout)
+	}
+	return jobDetailCard(t.scheduler, capture, jid)
+}
+
+// cancelJobsAcross is the cross-cluster actuator: ONE preview + confirm over the
+// merged set (the System column says where each pick lives), then one batched
+// cancel per cluster — a failed cluster degrades to its own error line, the rest
+// still cancel.
+func cancelJobsAcross(byCluster map[string]queueTarget, matched []queue.Job) error {
+	render.JobsTable("Cancel", config.User(), toJobRows(matched), render.JobCols{})
+	if !confirm("cancel %d job(s) across %d system(s)?", len(matched), len(clustersOf(matched))) {
+		render.Info("aborted")
+		return nil
+	}
+	var failed []string
+	for _, cluster := range clustersOf(matched) {
+		var ids []string
+		for _, j := range matched {
+			if j.Cluster == cluster {
+				ids = append(ids, j.ID)
+			}
+		}
+		t := byCluster[cluster]
+		cmd := cancelCmd(t.scheduler, ids)
+		if cmd == "" {
+			failed = append(failed, fmt.Sprintf("%s: no scheduler configured", cluster))
+			continue
+		}
+		target, err := hpc.Resolve(t.node)
+		if err == nil {
+			var out string
+			out, err = hpc.RemoteExecTimeout(target, cmd, collateTimeout)
+			if s := strings.TrimSpace(out); err == nil && s != "" {
+				render.Detail(s)
+			}
+		}
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", cluster, err))
+			continue
+		}
+		msg := fmt.Sprintf("cancelled %d job(s) on %s", len(ids), cluster)
+		render.OK(msg)
+		render.EventOK("queue", msg)
+	}
+	if len(failed) > 0 {
+		return runErr("cancel failed on: %s", strings.Join(failed, "; "))
+	}
+	return nil
+}
+
+// clustersOf lists the distinct clusters across matched jobs, first-seen order.
+func clustersOf(jobs []queue.Job) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, j := range jobs {
+		if !seen[j.Cluster] {
+			seen[j.Cluster] = true
+			out = append(out, j.Cluster)
+		}
+	}
+	return out
 }
 
 // cancelJobs is the shared actuator for mdel and mstat -i: preview the set, confirm
@@ -231,12 +407,45 @@ func jobSelectRows(jobs []queue.Job) []render.SelectRow {
 			state = strings.TrimSpace(j.RawState)
 		}
 		rows[i] = render.SelectRow{
-			ID:    j.ID,
-			Cells: []string{j.ShortID, j.User, j.Queue, state, elapWall(j.Elapsed, j.ReqWall), j.Name},
-			Hues:  []string{render.HueID, render.HueUser, render.HueGroup, "", "", render.HueName},
+			ID:      j.ID,
+			Cells:   []string{j.ShortID, j.User, j.Queue, state, elapWall(j.Elapsed, j.ReqWall), j.Name},
+			Hues:    []string{render.HueID, render.HueUser, render.HueGroup, "", "", render.HueName},
+			Preview: jobPreview(j),
 		}
 	}
 	return rows
+}
+
+// jobPreview composes the cursor pane from snapshot fields the columns don't show:
+// full native id (the cancel target), node count, the SLURM pending reason or
+// nodelist, and any scheduler timestamps. Snapshot-only by design — previews rebuild
+// every tick, so they must never cost a scheduler call (the full card stays on `i`).
+func jobPreview(j queue.Job) string {
+	lines := []string{j.ID + " — " + j.Name}
+	var info []string
+	if n := strings.TrimSpace(j.Nodes); n != "" {
+		info = append(info, n+" node(s)")
+	}
+	if r := j.PendingReason(); r != "" {
+		info = append(info, "waiting: "+r)
+	} else if r := strings.TrimSpace(j.Reason); r != "" {
+		info = append(info, "nodes: "+r)
+	}
+	if len(info) > 0 {
+		lines = append(lines, strings.Join(info, " · "))
+	}
+	var times []string
+	for _, t := range []struct{ label, val string }{
+		{"submit", j.Submit}, {"start", j.Start}, {"end", j.End},
+	} {
+		if v := strings.TrimSpace(t.val); v != "" {
+			times = append(times, t.label+" "+v)
+		}
+	}
+	if len(times) > 0 {
+		lines = append(lines, strings.Join(times, " · "))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // jobDetailCard fetches one job's full detail (qstat -f / scontrol show job) via the

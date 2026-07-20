@@ -149,23 +149,14 @@ func collateJobs(targets []queueTarget, scope string, who userSel) (string, []qu
 	if err := hpc.EnsureTicket(); err != nil {
 		return "", nil, nil, nil, runErr("%s", err)
 	}
-	results := make([]clusterResult, len(targets))
 	// Fan out concurrently; a spinner tracks how many of the N cluster fetches have
 	// returned (order is nondeterministic — a down/slow one just ticks the count
 	// when its bounded remote-exec times out, then surfaces as a warning later).
 	sp := render.NewSpinner(fmt.Sprintf("Collating queues 0/%d", len(targets)))
 	sp.Start()
-	done := make(chan struct{}, len(targets))
-	for i := range targets {
-		go func(i int) {
-			results[i] = fetchTarget(targets[i], who)
-			done <- struct{}{}
-		}(i)
-	}
-	for n := 1; n <= len(targets); n++ {
-		<-done
+	results := collateFan(targets, who, true, func(n int) {
 		sp.SetMessage(fmt.Sprintf("Collating queues %d/%d", n, len(targets)))
-	}
+	})
 	sp.Stop()
 	label := scope
 	if scope == "all" {
@@ -175,10 +166,34 @@ func collateJobs(targets []queueTarget, scope string, who userSel) (string, []qu
 	return label, jobs, prog, down, nil
 }
 
+// collateFan is the bare concurrent fan-out over targets — no spinner, no ticket
+// preamble — so the collate table (spinner around it) and the cross-cluster picker
+// (re-fetching silently behind the TUI, where a spinner would corrupt the frame)
+// share one fetch. onDone (optional) fires with the running completion count.
+// hooks=false also skips the per-target model-hooks ssh — the picker doesn't show
+// progress, so its refresh shouldn't double every cluster's traffic.
+func collateFan(targets []queueTarget, who userSel, hooks bool, onDone func(int)) []clusterResult {
+	results := make([]clusterResult, len(targets))
+	done := make(chan struct{}, len(targets))
+	for i := range targets {
+		go func(i int) {
+			results[i] = fetchTarget(targets[i], who, hooks)
+			done <- struct{}{}
+		}(i)
+	}
+	for n := 1; n <= len(targets); n++ {
+		<-done
+		if onDone != nil {
+			onDone(n)
+		}
+	}
+	return results
+}
+
 // fetchTarget runs one target's scheduler over the bounded remote-exec, tagging each job
 // with the target's label. The model-hooks fetch launches first so it runs concurrent
 // with the snapshot on the same system; its failures lose the progress, never the target.
-func fetchTarget(t queueTarget, who userSel) clusterResult {
+func fetchTarget(t queueTarget, who userSel, hooks bool) clusterResult {
 	if t.node == "" {
 		return clusterResult{cluster: t.label, err: errors.New("no nodes configured")}
 	}
@@ -190,7 +205,10 @@ func fetchTarget(t queueTarget, who userSel) clusterResult {
 	if err != nil {
 		return clusterResult{cluster: t.label, err: err}
 	}
-	hooksCh := fetchHookProgress(t.node, false)
+	var hooksCh <-chan map[string]string
+	if hooks {
+		hooksCh = fetchHookProgress(t.node, false)
+	}
 	out, err := hpc.RemoteExecTimeout(target, cmd, collateTimeout)
 	if err != nil {
 		return clusterResult{cluster: t.label, err: err}

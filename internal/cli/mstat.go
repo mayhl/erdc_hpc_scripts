@@ -47,7 +47,7 @@ func hpcQueueCmd() *cobra.Command {
 			}
 			if interactive {
 				if fleet || all {
-					return usageErr("mstat -i is single-cluster — drop -f/-e (use --node for another cluster)")
+					return mstatInteractiveCollate(all, who)
 				}
 				return mstatInteractive(node, who)
 			}
@@ -114,7 +114,7 @@ func hpcQueueCmd() *cobra.Command {
 	c.Flags().BoolVarP(&allUsers, "all-users", "a", false, "all users' jobs (default: yours)")
 	c.Flags().StringVarP(&userList, "user", "u", "", "show these users' jobs (comma-separated), e.g. -u alice,bob")
 	c.Flags().BoolVar(&start, "start", false, "add a Start column: actual start (running) or estimated start (pending); SLURM only")
-	c.Flags().BoolVarP(&interactive, "interactive", "i", false, "pick jobs to cancel interactively (single cluster)")
+	c.Flags().BoolVarP(&interactive, "interactive", "i", false, "pick jobs to cancel interactively (with -f/-e: across the collate view)")
 	c.Flags().BoolVar(&jsonOut, "json", false, "emit jobs as JSON (complete, untruncated) instead of a table")
 	c.MarkFlagsMutuallyExclusive("all-users", "user") // both pick WHO; -u is a subset, -a is everyone
 	c.AddCommand(queueKillCmd(), queueInfoCmd(), queuePeekCmd(), queueHoldCmd(), queueReleaseCmd(), queueHistCmd())
