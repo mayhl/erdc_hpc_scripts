@@ -5,7 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/mayhl/mayhl_utils/internal/hpc"
 	"github.com/mayhl/mayhl_utils/internal/queue"
 	"github.com/mayhl/mayhl_utils/internal/render"
 	"github.com/mayhl/mayhl_utils/internal/shell"
@@ -175,9 +174,7 @@ func addQueueScopeFlags(c *cobra.Command, node, userList *string, allUsers, patt
 		c.Flags().BoolVarP(patternFlag, "pattern", "p", false, "force every argument to be a name mask")
 	}
 	c.MarkFlagsMutuallyExclusive("all-users", "user")
-	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
-		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
-	})
+	completeNodeFlag(c)
 }
 
 // mustUserSel builds the WHO axis from -u/-a, returning a code-2 error on a malformed

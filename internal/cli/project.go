@@ -66,9 +66,7 @@ func projectSubmitCmd() *cobra.Command {
 	f.BoolVarP(&force, "force", "f", false, "override a case's node-lock (submit to a node other than its .mu-node marker)")
 	f.BoolVar(&noSync, "no-sync", false, "skip the --clean SHARED-data sync (simulations/data already staged)")
 	f.Float64Var(&hours, "hours", 0, "override the estimated core-hour cost for the allocation pre-flight (else parsed from the script)")
-	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
-		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
-	})
+	completeNodeFlag(c)
 	return c
 }
 

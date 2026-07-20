@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/mayhl/mayhl_utils/internal/hpc"
 	"github.com/mayhl/mayhl_utils/internal/render"
 	"github.com/mayhl/mayhl_utils/internal/shell"
 )
@@ -124,9 +123,7 @@ func jobHarnessLoginCmd() *cobra.Command {
 	}
 	c.Flags().StringVarP(&node, "node", "N", "", "cluster to target (required)")
 	c.Flags().StringVar(&dir, "dir", "", "starting directory for the pane (attach + interactive land here) and the anchor for driven commands; default: the pane's pwd on first run")
-	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
-		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
-	})
+	completeNodeFlag(c)
 	return c
 }
 

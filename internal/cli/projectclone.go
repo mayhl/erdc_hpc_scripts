@@ -44,9 +44,7 @@ func projectCloneCmd() *cobra.Command {
 		[2]string{"[path]", "a path inside the project (default: the current directory)"})
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip confirmation")
 	c.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "show the plan without touching anything")
-	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
-		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
-	})
+	completeNodeFlag(c)
 	return c
 }
 

@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
-	"github.com/mayhl/mayhl_utils/internal/hpc"
 	"github.com/mayhl/mayhl_utils/internal/queue"
 	"github.com/mayhl/mayhl_utils/internal/render"
 )
@@ -113,9 +112,7 @@ func hpcStorageCmd() *cobra.Command {
 	c.MarkFlagsMutuallyExclusive("json", "raw")
 	c.MarkFlagsMutuallyExclusive("raw", "fleet")
 	c.MarkFlagsMutuallyExclusive("raw", "all-systems")
-	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
-		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
-	})
+	completeNodeFlag(c)
 	return c
 }
 

@@ -28,6 +28,14 @@ func hpcCmd() *cobra.Command {
 	return c
 }
 
+// completeNodeFlag wires cluster-name completion onto a command's --node flag —
+// the one registration every -N/--node verb shares.
+func completeNodeFlag(c *cobra.Command) {
+	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
+		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
+	})
+}
+
 // currentCluster resolves the cluster this shell runs on to its (name, scheduler)
 // from config, or ("", "") off-HPC. $MU_NODE overrides $BC_HOST; when $BC_HOST
 // carries a login-node number (e.g. login01) absent from config, it retries the

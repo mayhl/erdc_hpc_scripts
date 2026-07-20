@@ -58,9 +58,7 @@ func jobCleanCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVarP(&node, "node", "N", "", "cluster to target (required off an HPC login node)")
-	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
-		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
-	})
+	completeNodeFlag(c)
 	return c
 }
 
@@ -294,9 +292,7 @@ func jobSubCmd() *cobra.Command {
 	c.Flags().BoolVarP(&interactive, "interactive", "i", false, "edit the submission in a form (fields pre-seeded from flags + config, live queue list)")
 	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip confirmation")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print the submit command without submitting")
-	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
-		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
-	})
+	completeNodeFlag(c)
 	return c
 }
 

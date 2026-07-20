@@ -117,9 +117,7 @@ func hpcQueueCmd() *cobra.Command {
 	c.MarkFlagsMutuallyExclusive("node", "local", "fleet", "all-systems")
 	c.MarkFlagsMutuallyExclusive("all-users", "user") // both pick WHO; -u is a subset, -a is everyone
 	c.AddCommand(queueKillCmd(), queueInfoCmd(), queuePeekCmd(), queueHoldCmd(), queueReleaseCmd(), queueHistCmd())
-	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
-		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
-	})
+	completeNodeFlag(c)
 	return c
 }
 

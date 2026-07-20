@@ -132,9 +132,7 @@ func hpcQueuesCmd() *cobra.Command {
 	c.Flags().BoolVar(&jsonOut, "json", false, "emit queues as JSON (complete, untruncated) instead of a table")
 	c.MarkFlagsMutuallyExclusive("node", "local", "fleet", "all-systems")
 	c.MarkFlagsMutuallyExclusive("json", "interactive")
-	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
-		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
-	})
+	completeNodeFlag(c)
 	return c
 }
 

@@ -112,9 +112,7 @@ func jobTunnelCmd() *cobra.Command {
 	f.BoolVarP(&yes, "yes", "y", false, "skip confirmation")
 	f.DurationVar(&wait, "wait", 15*time.Minute, "give up if the job isn't running by then")
 	f.DurationVar(&poll, "poll", 5*time.Second, "scheduler poll interval while waiting")
-	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
-		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
-	})
+	completeNodeFlag(c)
 	c.AddCommand(tunnelLsCmd(), tunnelReattachCmd(), tunnelCloseCmd())
 	return c
 }
@@ -135,9 +133,7 @@ func addShellAllocFlags(c *cobra.Command, o *shellAlloc) {
 	c.Flags().StringVarP(&o.walltime, "walltime", "t", "", "how long to hold the session: HH:MM:SS or a duration (10m, 1h, 1.5h); default: config interactive_walltime")
 	c.Flags().IntVarP(&o.nodes, "nodes", "n", 1, "nodes to allocate (PBS select chunk / SLURM -N)")
 	c.Flags().BoolVarP(&o.interactive, "interactive", "i", false, "pick the queue, account and walltime in a form (queue enum from the cluster's queue list)")
-	_ = c.RegisterFlagCompletionFunc("node", func(_ *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
-		return hpc.CompleteNode(tc), cobra.ShellCompDirectiveNoFileComp
-	})
+	completeNodeFlag(c)
 }
 
 // runShellAlloc runs the -i form (when asked) then hands off to the interactive allocation. dir,
