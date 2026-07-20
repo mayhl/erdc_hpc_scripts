@@ -301,7 +301,7 @@ func jobTunnel(node, script, jobID, account, walltime string, sel *queueSel, por
 		return runErr("%s", err)
 	}
 
-	mux, err := hpc.OpenSession(target, hpc.SessionOpts{Persist: !foreground, ID: fmt.Sprintf("%s-%d", node, localPort)})
+	mux, err := hpc.OpenSession(target, hpc.SessionOpts{Persist: !foreground, ID: tunnelSockID(node, localPort)})
 	if err != nil {
 		return runErr("%s: connect: %s", node, err)
 	}

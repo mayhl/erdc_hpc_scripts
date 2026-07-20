@@ -271,9 +271,9 @@ func reattachTunnel(t tunnelRec) error {
 	if err := hpc.EnsureTicket(); err != nil {
 		return runErr("%s", err)
 	}
-	// One held connection for both legs, and the SAME socket name the original master used
-	// (node-port, not the tunnel id) — so a later `close` finds it exactly where it looks.
-	mux, err := hpc.OpenSession(t.Target, hpc.SessionOpts{Persist: true, ID: fmt.Sprintf("%s-%d", t.System, t.LocalPort)})
+	// One held connection for both legs, through the shared socket-name contract —
+	// so a later `close` finds the master exactly where it looks.
+	mux, err := hpc.OpenSession(t.Target, hpc.SessionOpts{Persist: true, ID: tunnelSockID(t.System, t.LocalPort)})
 	if err != nil {
 		return runErr("connect: %s", err)
 	}

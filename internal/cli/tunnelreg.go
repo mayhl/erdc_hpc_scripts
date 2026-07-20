@@ -57,6 +57,13 @@ type tunnelRec struct {
 // user — the port and the type belong only in the local registry, never on the scheduler.
 func jobName(id string) string { return "mu-" + id }
 
+// tunnelSockID names the tunnel's ssh control socket: node-port, NOT the tunnel id.
+// Open and reattach must mint the SAME name — `close` and the stale-socket reap look
+// for the socket where the original master put it, so this is a cross-verb contract.
+func tunnelSockID(system string, localPort int) string {
+	return fmt.Sprintf("%s-%d", system, localPort)
+}
+
 // newTunnelID mints a short random handle (2 bytes → 4 hex). Random, not sequential: the
 // name must carry no information — a counter would leak how many tunnels you've opened.
 func newTunnelID() string {
