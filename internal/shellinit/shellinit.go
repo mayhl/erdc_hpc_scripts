@@ -362,8 +362,10 @@ func sharedTooling() string {
 // doctorCheckup emits the throttled health check: at most one background `mu doctor
 // --checkup` per doctor.CheckupEvery, launched disowned so startup never waits on it.
 // The fast path is builtin-only reads (`date +%s` is the one exec). A WARN/FAIL run
-// leaves doctor.notice, printed at the NEXT shell start — async output landing over a
-// live prompt is worse than a one-shell delay; a healthy run clears it. mu re-checks
+// leaves doctor.notice, shown at the NEXT shell start via zsh/sched (zsh) or a one-shot
+// PROMPT_COMMAND (bash) — NOT inline during sourcing, which trips p10k's instant-prompt
+// guard; the sched'd print lands after p10k restores the tty, so it escapes the capture
+// buffer and prints cleanly above the prompt. A healthy run clears it. mu re-checks
 // the stamp, so racing shells collapse to one run. Paths mirror doctor's Stamp/Notice.
 // INTERACTIVE shells only (case $-): notices are for humans, and a non-interactive
 // eval's stdout is often captured — `ssh host bash -lc …`, $(…) — where the notice
@@ -371,7 +373,37 @@ func sharedTooling() string {
 func doctorCheckup() string {
 	return fmt.Sprintf(`case $- in *i*)
 _mu_dc="${XDG_CACHE_HOME:-$HOME/.cache}/mayhl_utils"
-[ -r "$_mu_dc/doctor.notice" ] && cat "$_mu_dc/doctor.notice" || :
+if [ -r "$_mu_dc/doctor.notice" ]; then
+  # Show the nag WITHOUT tripping Powerlevel10k's instant-prompt guard. p10k captures
+  # stdout into a hidden buffer from its preamble through the WHOLE precmd chain, and
+  # restores the real tty only from a zsh/sched task that fires after precmd — so
+  # neither an inline cat nor a precmd escapes the buffer. zsh: sched the print from a
+  # precmd, which runs AFTER p10k's teardown-scheduler precmd, so our sched entry is
+  # queued after p10k's; p10k restores the tty first, then we print straight to it (no
+  # capture, no warning). bash has no instant prompt, so a PROMPT_COMMAND one-shot does.
+  # The notice file persists until a healthy checkup clears it, so it re-nags each shell.
+  _mu_doctor_notice() {
+    local _f="${XDG_CACHE_HOME:-$HOME/.cache}/mayhl_utils/doctor.notice"
+    [ -r "$_f" ] && cat "$_f"
+  }
+  if [ -n "${ZSH_VERSION:-}" ]; then
+    zmodload zsh/sched 2>/dev/null
+    autoload -Uz add-zsh-hook
+    _mu_doctor_notice_arm() {
+      sched +0 _mu_doctor_notice
+      add-zsh-hook -d precmd _mu_doctor_notice_arm
+      unset -f _mu_doctor_notice_arm
+    }
+    add-zsh-hook precmd _mu_doctor_notice_arm
+  else
+    _mu_doctor_notice_once() {
+      _mu_doctor_notice
+      PROMPT_COMMAND="${PROMPT_COMMAND//_mu_doctor_notice_once;/}"
+      unset -f _mu_doctor_notice_once
+    }
+    PROMPT_COMMAND="_mu_doctor_notice_once;${PROMPT_COMMAND}"
+  fi
+fi
 _mu_dt=0
 [ -r "$_mu_dc/doctor.stamp" ] && read -r _mu_dt < "$_mu_dc/doctor.stamp" || :
 case $_mu_dt in ''|*[!0-9]*) _mu_dt=0 ;; esac

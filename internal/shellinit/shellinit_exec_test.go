@@ -203,6 +203,9 @@ func TestDoctorCheckupExec(t *testing.T) {
 				cache := t.TempDir()
 				driver := `mu() { : > "$XDG_CACHE_HOME/mu-called"; }
 ` + prep + doctorCheckup() + `
+# the notice now fires from a precmd/PROMPT_COMMAND hook — this driver never reaches a
+# prompt, so invoke the registered one-shot directly to observe it.
+type _mu_doctor_notice >/dev/null 2>&1 && _mu_doctor_notice
 i=0
 while [ ! -f "$XDG_CACHE_HOME/mu-called" ] && [ "$i" -lt 20 ]; do sleep 0.05; i=$((i+1)); done
 [ -f "$XDG_CACHE_HOME/mu-called" ] && echo "FIRED" || echo "SKIPPED"
