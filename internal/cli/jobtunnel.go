@@ -76,11 +76,12 @@ func jobTunnelCmd() *cobra.Command {
 					return nil
 				}
 				// The form validated the exclusivity and the port; its queue is now literal.
-				script, jobID, account, walltime = f.Script, f.JobID, f.Account, f.Walltime
-				port, localPort = f.Port, f.LocalPort
-				foreground = f.Foreground
 				sel = queueSel{queue: f.Queue}
-				return jobTunnel(node, script, jobID, account, walltime, &sel, port, localPort, name, foreground, yes, wait, poll)
+				return jobTunnel(tunnelOpts{
+					node: node, script: f.Script, jobID: f.JobID, account: f.Account,
+					walltime: f.Walltime, sel: &sel, port: f.Port, localPort: f.LocalPort,
+					name: name, foreground: f.Foreground, yes: yes, wait: wait, poll: poll,
+				})
 			}
 			if script == "" && jobID == "" {
 				return usageErr("tunnel needs a <script> to submit or --job <id> (or -i for the form)")
@@ -94,7 +95,11 @@ func jobTunnelCmd() *cobra.Command {
 			// An unnamed -l stays 0 so pickLocalPort can start at the service port and walk up
 			// when it's taken. Defaulting it here would forge a port the user never named, and
 			// a NAMED port is refused rather than moved — so the busy case died at the refusal.
-			return jobTunnel(node, script, jobID, account, walltime, &sel, port, localPort, name, foreground, yes, wait, poll)
+			return jobTunnel(tunnelOpts{
+				node: node, script: script, jobID: jobID, account: account,
+				walltime: walltime, sel: &sel, port: port, localPort: localPort,
+				name: name, foreground: foreground, yes: yes, wait: wait, poll: poll,
+			})
 		},
 	}
 	setHelpArgs(c, [2]string{"[script]", "service script: a local path is pushed, a remote path submitted as-is"})
@@ -197,95 +202,113 @@ func jobShellCmd() *cobra.Command {
 	return c
 }
 
+// tunnelOpts bundles jobTunnel's knobs — the flag surface of `mu job tunnel`,
+// filled from the flags directly or from the -i form's result.
+type tunnelOpts struct {
+	node       string
+	script     string
+	jobID      string // adopt mode: reattach to this job instead of submitting
+	account    string
+	walltime   string
+	sel        *queueSel
+	port       int // service port on the compute node
+	localPort  int // 0 = pick the first free port at or above port
+	name       string
+	foreground bool
+	yes        bool
+	wait       time.Duration
+	poll       time.Duration
+}
+
 // jobTunnel is the script-mode pipeline over ONE held connection: open an ssh
 // ControlMaster (the single auth), submit and wait as channels on it, then add
 // the port-forward to the same live connection and hold until Ctrl-C. The
 // login node sees one session for the whole flow.
-func jobTunnel(node, script, jobID, account, walltime string, sel *queueSel, port, localPort int, name string, foreground, yes bool, wait, poll time.Duration) error {
-	if node == "" {
+func jobTunnel(o tunnelOpts) error {
+	if o.node == "" {
 		return usageErr("needs -N <cluster> — the tunnel runs from the workstation")
 	}
 	// Bind the local end BEFORE anything remote: a doomed port shouldn't cost a submit. When
 	// -l was given it must be that port or an error; otherwise mu picks the first free one at
 	// or above the remote port, so the URL stays predictable.
-	localPort, err := pickLocalPort(localPort, port)
+	localPort, err := pickLocalPort(o.localPort, o.port)
 	if err != nil {
 		return err
 	}
-	scheduler := config.SchedulerFor(node)
+	scheduler := config.SchedulerFor(o.node)
 	adapter := queue.For(scheduler)
 	if adapter == nil {
-		return errNoScheduler(node)
+		return errNoScheduler(o.node)
 	}
 	startedAt := time.Now()
-	target, err := hpc.Resolve(node)
+	target, err := hpc.Resolve(o.node)
 	if err != nil {
 		return usageErr("%s", err)
 	}
-	if account == "" {
-		account = config.AccountFor(node)
+	if o.account == "" {
+		o.account = config.AccountFor(o.node)
 	}
 	queue_, wall := "", ""
-	if jobID == "" { // adopt mode never submits — don't resolve (or live-fetch) a queue for it
+	if o.jobID == "" { // adopt mode never submits — don't resolve (or live-fetch) a queue for it
 		// The bare default counts: a site whose queue rides --qos has no usable scheduler
 		// default, so submitting without one is refused outright (Invalid qos specification).
-		if queue_, err = sel.resolve(node, node, true); err != nil {
+		if queue_, err = o.sel.resolve(o.node, o.node, true); err != nil {
 			return err
 		}
 		// A tunnel is a HELD session: it lives exactly as long as its job, so the config
 		// default applies — unless the script speaks for itself.
 		dflt := ""
-		if mayInjectWalltime(node, script) {
-			if dflt, err = interactiveWalltime(node); err != nil {
+		if mayInjectWalltime(o.node, o.script) {
+			if dflt, err = interactiveWalltime(o.node); err != nil {
 				return err
 			}
 		}
-		debugMax := (sel.debug || sel.dbg) && mayInjectWalltime(node, script)
-		if wall, err = resolveWalltime(node, queue_, walltime, dflt, debugMax); err != nil {
+		debugMax := (o.sel.debug || o.sel.dbg) && mayInjectWalltime(o.node, o.script)
+		if wall, err = resolveWalltime(o.node, queue_, o.walltime, dflt, debugMax); err != nil {
 			return err
 		}
 	}
-	part, qos := submitTarget(node, queue_)
+	part, qos := submitTarget(o.node, queue_)
 	id := newTunnelID()
 	// The job wears mu-<id> — no port, no "tunnel" — so a cluster-wide qstat leaks nothing.
 	// -J still overrides for someone who wants a name of their own; the id remains the handle.
-	if name == "" {
-		name = jobName(id)
+	if o.name == "" {
+		o.name = jobName(id)
 	}
 	// Hand the job its port so the service and the forward agree by construction — the trap
 	// otherwise is a script that hardcodes one number while -p names another.
 	opts := queue.SubmitOpts{
-		Account: account, Queue: part, QOS: qos, Walltime: wall, Name: name,
-		Env: map[string]string{"MU_PORT": strconv.Itoa(port)},
+		Account: o.account, Queue: part, QOS: qos, Walltime: wall, Name: o.name,
+		Env: map[string]string{"MU_PORT": strconv.Itoa(o.port)},
 	}
 	// A LOCAL script is pushed to the cluster and submitted from there — so `~/serve.sh` names
 	// the file on YOUR disk, the way tab-completion already resolved it — while a bare remote
 	// path is submitted as-is. The staged path is deterministic from the id, so the submit
 	// command below is honest before the file is actually written (which needs the mux).
-	push := jobID == "" && isLocalScript(script)
-	remoteScript := script
+	push := o.jobID == "" && isLocalScript(o.script)
+	remoteScript := o.script
 	if push {
 		remoteScript = stagedPath(id)
 	}
 	submitCmd := adapter.SubmitCmd(remoteScript, opts)
 
-	render.Info(fmt.Sprintf("Tunnel job → %s (%s)", node, scheduler))
-	if jobID == "" {
+	render.Info(fmt.Sprintf("Tunnel job → %s (%s)", o.node, scheduler))
+	if o.jobID == "" {
 		if push {
-			render.Verbose(fmt.Sprintf("script:  %s → %s (push)", script, remoteScript))
+			render.Verbose(fmt.Sprintf("script:  %s → %s (push)", o.script, remoteScript))
 		} else {
 			render.Verbose("script:  " + remoteScript)
 		}
 		render.Detail("command: " + submitCmd)
 	} else {
-		render.Detail("job:     " + jobID)
+		render.Detail("job:     " + o.jobID)
 	}
-	render.Verbose(fmt.Sprintf("tunnel:  localhost:%d → <node>:%d, one held connection", localPort, port))
-	if !foreground {
+	render.Verbose(fmt.Sprintf("tunnel:  localhost:%d → <node>:%d, one held connection", localPort, o.port))
+	if !o.foreground {
 		render.Verbose("mode:    background — mu exits once it's up; close with `mu job tunnel close`")
 	}
-	if !yes {
-		if !confirm("connect + tunnel on %s?", node) {
+	if !o.yes {
+		if !confirm("connect + tunnel on %s?", o.node) {
 			render.Info("aborted")
 			return nil
 		}
@@ -294,9 +317,9 @@ func jobTunnel(node, script, jobID, account, walltime string, sel *queueSel, por
 		return runErr("%s", err)
 	}
 
-	mux, err := hpc.OpenSession(target, hpc.SessionOpts{Persist: !foreground, ID: tunnelSockID(node, localPort)})
+	mux, err := hpc.OpenSession(target, hpc.SessionOpts{Persist: !o.foreground, ID: tunnelSockID(o.node, localPort)})
 	if err != nil {
-		return runErr("%s: connect: %s", node, err)
+		return runErr("%s: connect: %s", o.node, err)
 	}
 	// A backgrounded master must SURVIVE mu's exit — that's the point. But it must NOT survive a
 	// FAILED setup: an error after the master is up (bad submit, never-runs, forward refused)
@@ -324,57 +347,57 @@ func jobTunnel(node, script, jobID, account, walltime string, sel *queueSel, por
 	if push {
 		// Write the local script to its staged path over the master we already hold — before
 		// submit, so a failed push aborts cleanly (keepMux stays false → the master is torn down).
-		if _, err := writeStaged(mux.Run, script, id); err != nil {
-			return tunnelErr(aborted, "%s: %s", node, err)
+		if _, err := writeStaged(mux.Run, o.script, id); err != nil {
+			return tunnelErr(aborted, "%s: %s", o.node, err)
 		}
-		render.OK("pushed " + script + " → " + remoteScript)
+		render.OK("pushed " + o.script + " → " + remoteScript)
 	}
 
-	if jobID == "" {
+	if o.jobID == "" {
 		out, err := mux.Run(submitCmd)
 		if err != nil {
-			return tunnelErr(aborted, "%s: submit: %s", node, err)
+			return tunnelErr(aborted, "%s: submit: %s", o.node, err)
 		}
-		if jobID = queue.ParseSubmitID(scheduler, out); jobID == "" {
-			return runErr("%s: submit returned no job id:\n%s", node, strings.TrimSpace(out))
+		if o.jobID = queue.ParseSubmitID(scheduler, out); o.jobID == "" {
+			return runErr("%s: submit returned no job id:\n%s", o.node, strings.TrimSpace(out))
 		}
-		render.OK("submitted " + jobID)
+		render.OK("submitted " + o.jobID)
 	}
 
-	host, err := waitRunning(mux.Run, adapter, scheduler, jobID, wait, poll)
+	host, err := waitRunning(mux.Run, adapter, scheduler, o.jobID, o.wait, o.poll)
 	if err != nil {
 		return tunnelErr(aborted, "%s", err)
 	}
 	runningAt := time.Now()
-	render.OK(fmt.Sprintf("job %s running on %s", jobID, host))
+	render.OK(fmt.Sprintf("job %s running on %s", o.jobID, host))
 
-	if err := mux.Forward(localPort, host, port); err != nil {
+	if err := mux.Forward(localPort, host, o.port); err != nil {
 		return runErr("adding the forward: %s", err)
 	}
 
 	rec := tunnelRec{
-		ID: id, System: node, Job: jobID, Host: host, Target: target, Sock: mux.Sock(),
-		LocalPort: localPort, RemotePort: port, Walltime: wall, Script: remoteScript, Staged: push,
+		ID: id, System: o.node, Job: o.jobID, Host: host, Target: target, Sock: mux.Sock(),
+		LocalPort: localPort, RemotePort: o.port, Walltime: wall, Script: remoteScript, Staged: push,
 		Started: startedAt, Running: runningAt,
 	}
 	if err := saveTunnel(rec); err != nil {
 		// The tunnel is up; we just can't track it. Say so rather than tear down working work.
-		render.Warn(fmt.Sprintf("tunnel is up but not recorded (%v) — `close` won't find it; Ctrl-C or `mdel %s`", err, jobID))
+		render.Warn(fmt.Sprintf("tunnel is up but not recorded (%v) — `close` won't find it; Ctrl-C or `mdel %s`", err, o.jobID))
 	}
 
-	if !foreground {
+	if !o.foreground {
 		keepMux = true // setup succeeded — the master now outlives mu; `close` tears it down later
-		render.OK(fmt.Sprintf("tunnel up: %s → %s:%d (background; close with `mu job tunnel close %s`)", rec.URL(), host, port, id))
+		render.OK(fmt.Sprintf("tunnel up: %s → %s:%d (background; close with `mu job tunnel close %s`)", rec.URL(), host, o.port, id))
 		return nil
 	}
-	render.OK(fmt.Sprintf("tunnel up: %s → %s:%d (Ctrl-C to close)", rec.URL(), host, port))
+	render.OK(fmt.Sprintf("tunnel up: %s → %s:%d (Ctrl-C to close)", rec.URL(), host, o.port))
 	defer forgetTunnel(rec) // foreground: the tunnel dies with this process, so its record should too
 	select {
 	case <-aborted:
 		render.Info("tunnel closed")
 		return nil
 	case err := <-mux.Death():
-		return runErr("connection to %s dropped: %v — resume with --job %s", node, err, jobID)
+		return runErr("connection to %s dropped: %v — resume with --job %s", o.node, err, o.jobID)
 	}
 }
 
