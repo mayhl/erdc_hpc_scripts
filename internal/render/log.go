@@ -208,7 +208,42 @@ func Info(msg string) {
 }
 func OK(msg string)   { renderTier(LevelOK, msg) }
 func Warn(msg string) { renderTier(slog.LevelWarn, msg) }
-func Err(msg string)  { renderTier(slog.LevelError, msg) }
+func Err(msg string)  { renderTier(slog.LevelError, capErr(msg)) }
+
+// errTailCap bounds the dimmed continuation block under an error line. Long remote
+// stderr (compiler spew, a qsub traceback) keeps its LAST lines — the end is where
+// shells and compilers put the verdict — with the full text dumped to a file.
+const errTailCap = 25
+
+// capErr enforces errTailCap: an over-long tail is cut to its last errTailCap lines
+// behind an "… N line(s) omitted" marker, and the full message lands in an
+// err-<id>.log beside the event log (best-effort, like CrashDump — an unwritable
+// dump just drops the pointer line).
+func capErr(msg string) string {
+	lines := strings.Split(msg, "\n")
+	if len(lines) <= errTailCap+1 { // head + a within-cap tail: untouched
+		return msg
+	}
+	out := make([]string, 0, errTailCap+3)
+	out = append(out, lines[0], fmt.Sprintf("… %d line(s) omitted", len(lines)-1-errTailCap))
+	out = append(out, lines[len(lines)-errTailCap:]...)
+	if path := errDump(msg); path != "" {
+		out = append(out, "full output: "+path)
+	}
+	return strings.Join(out, "\n")
+}
+
+// errDump writes the uncut error text to err-<id>.log beside the event log. No
+// breadcrumb event on purpose: Err is an EPHEMERAL tier (unscoped ⇒ not recorded)
+// and the dump is just its overflow, not a curated event.
+func errDump(msg string) string {
+	dir := filepath.Dir(eventLogPath())
+	path := filepath.Join(dir, "err-"+newEventID()+".log")
+	if os.MkdirAll(dir, 0o755) != nil || os.WriteFile(path, []byte(msg+"\n"), 0o644) != nil {
+		return ""
+	}
+	return path
+}
 
 // Logger is a scope-bound emitter — its records are recorded in the event log.
 type Logger struct{ l *slog.Logger }

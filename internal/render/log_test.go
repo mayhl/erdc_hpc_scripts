@@ -130,3 +130,47 @@ func readFile(t *testing.T, p string) string {
 	}
 	return string(b)
 }
+
+// capErr leaves short errors alone; an over-cap tail keeps the head + LAST lines
+// behind an omission marker and points at a full err-<id>.log dump.
+func TestCapErr(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MU_LOG_FILE", filepath.Join(dir, "framework.log"))
+
+	short := "boom\nline1\nline2"
+	if got := capErr(short); got != short {
+		t.Errorf("within-cap message altered: %q", got)
+	}
+
+	lines := []string{"remote build failed"}
+	for i := 0; i < 40; i++ {
+		lines = append(lines, "spew")
+	}
+	lines = append(lines, "Error: the verdict")
+	msg := strings.Join(lines, "\n")
+
+	got := strings.Split(capErr(msg), "\n")
+	if got[0] != "remote build failed" {
+		t.Errorf("head line lost: %q", got[0])
+	}
+	if !strings.Contains(got[1], "line(s) omitted") {
+		t.Errorf("omission marker missing: %q", got[1])
+	}
+	if got[len(got)-2] != "Error: the verdict" {
+		t.Errorf("tail must end with the message's last line, got %q", got[len(got)-2])
+	}
+	last := got[len(got)-1]
+	if !strings.HasPrefix(last, "full output: ") {
+		t.Fatalf("dump pointer missing: %q", last)
+	}
+	dump, err := os.ReadFile(strings.TrimPrefix(last, "full output: "))
+	if err != nil {
+		t.Fatalf("dump file unreadable: %v", err)
+	}
+	if strings.TrimSuffix(string(dump), "\n") != msg {
+		t.Error("dump file doesn't carry the full uncut message")
+	}
+	if len(got) != 2+errTailCap+1 { // head + marker + tail cap + pointer
+		t.Errorf("capped block is %d lines, want %d", len(got), 2+errTailCap+1)
+	}
+}
