@@ -279,6 +279,20 @@ func CrashDump(reason, stack string) (id, path string) {
 	return id, path
 }
 
+// Spill persists a body to <prefix>-<id>.log beside the event log, returning the
+// id and path ("" path when unwritable — the caller degrades to inline). Spill
+// itself logs nothing; the caller writes its own breadcrumb event. The file-beside-
+// the-log family: crash-<id>.log, err-<id>.log, payload-<id>.json, and these.
+func Spill(prefix, body string) (id, path string) {
+	id = newEventID()
+	dir := filepath.Dir(eventLogPath())
+	path = filepath.Join(dir, prefix+"-"+id+".log")
+	if os.MkdirAll(dir, 0o755) != nil || os.WriteFile(path, []byte(body), 0o644) != nil {
+		path = ""
+	}
+	return id, path
+}
+
 // emit is the shared structured-event core: it logs the record (and renders unless
 // quiet) with an optional payload, returning the event id ("" when no payload). The id
 // is written into the payload under "id" unless the caller already set one (letting a
