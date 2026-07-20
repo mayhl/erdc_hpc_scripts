@@ -24,6 +24,9 @@ type SelectRow struct {
 	ID    string
 	Cells []string
 	Hues  []string
+	// Preview is the row's full-text block for the SelectSpec.Preview pane ("" = none).
+	// Carried on the row — built in bulk by Fetch — so cursor moves never wait on a fetch.
+	Preview string
 }
 
 // SelectSpec configures the picker: the action verb (e.g. "kill", shown as "Select
@@ -46,6 +49,18 @@ type SelectSpec struct {
 	// title instead of "Select to <verb>").
 	ReadOnly bool
 	Title    string
+	// PickOne turns the widget into a single-pick CHOOSER: enter accepts the CURSOR row
+	// (a one-element result) and the mark keys (space/a) are gone — for cut-point picks
+	// like `grv -i` where landing on a row means "through here".
+	PickOne bool
+	// Preview turns on the live pane under the list: the CURSOR row's Preview text
+	// (e.g. the full commit message), following the cursor as it moves. The list yields
+	// up to half its height to the pane; a cropped pane defers to the `i` Detail
+	// overlay for the full text.
+	Preview bool
+	// StderrUI renders the picker on stderr, keeping stdout clean for a machine-readable
+	// result a wrapping script captures (e.g. grv -i reading the picked count).
+	StderrUI bool
 	// FacetCol enables the `f` key to cycle the list through the distinct values of one
 	// column: all → value1 → value2 → … → all. It's the 1-based index of that column in
 	// Columns (0 = disabled). Domain-free — the widget just cycles the cell values.
@@ -64,12 +79,22 @@ func Select(spec SelectSpec) ([]string, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	res, err := tea.NewProgram(newSelectModel(spec, rows)).Run()
+	var opts []tea.ProgramOption
+	if spec.StderrUI {
+		opts = append(opts, tea.WithOutput(os.Stderr))
+	}
+	res, err := tea.NewProgram(newSelectModel(spec, rows), opts...).Run()
 	if err != nil {
 		return nil, err
 	}
 	m := res.(selectModel)
 	if !m.confirmed {
+		return nil, nil
+	}
+	if spec.PickOne {
+		if m.cursor < len(m.visible) {
+			return []string{m.rows[m.visible[m.cursor]].ID}, nil
+		}
 		return nil, nil
 	}
 	var out []string
@@ -201,15 +226,15 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.clampScroll()
 		case " ", "space":
-			if m.spec.ReadOnly {
-				break // viewer: nothing to select
+			if m.spec.ReadOnly || m.spec.PickOne {
+				break // viewer / single-pick: no marks
 			}
 			if len(m.visible) > 0 {
 				id := m.rows[m.visible[m.cursor]].ID
 				m.selected[id] = !m.selected[id]
 			}
 		case "a": // toggle every currently-visible row
-			if m.spec.ReadOnly {
+			if m.spec.ReadOnly || m.spec.PickOne {
 				break
 			}
 			all := true
@@ -251,7 +276,7 @@ func fetchDetailCmd(fn func(string) string, id string) tea.Cmd {
 }
 
 // updateFilter handles keystrokes while the filter box is active.
-func (m selectModel) updateFilter(msg tea.KeyPressMsg) tea.Model {
+func (m selectModel) updateFilter(msg tea.KeyPressMsg) selectModel {
 	switch msg.String() {
 	case "enter":
 		m.filtering = false
@@ -350,16 +375,39 @@ func (m selectModel) facetHint(dot string) string {
 	return dot + "f " + label + ": " + val
 }
 
-func (m *selectModel) pageSize() int {
-	// chrome: title + border top + header + border bottom + footer (+ filter line).
-	chrome := 5
+// chromeLines counts the fixed lines around the list: title + border top + header +
+// border bottom + footer (+ filter line).
+func (m *selectModel) chromeLines() int {
 	if m.filtering {
-		chrome = 6
+		return 6
 	}
-	if p := m.height - chrome; p > 1 {
+	return 5
+}
+
+func (m *selectModel) pageSize() int {
+	p := m.height - m.chromeLines()
+	if m.spec.Preview {
+		// The pane takes what's left below the list: the list keeps at most half the
+		// usable height (and shrinks to its row count when smaller), but only yields
+		// when the pane earns at least 3 lines — a tiny terminal keeps the full list.
+		half := max(p/2, 3)
+		if n := len(m.visible); n > 0 && n < half {
+			half = n
+		}
+		if half < p && p-half-1 >= 3 {
+			p = half
+		}
+	}
+	if p > 1 {
 		return p
 	}
 	return 1
+}
+
+// previewBudget is the pane's line allowance: the usable height minus the list block
+// and its rule line. Below 3 the pane isn't drawn.
+func (m *selectModel) previewBudget() int {
+	return m.height - m.chromeLines() - m.pageSize() - 1
 }
 
 func (m *selectModel) clampScroll() {
@@ -420,8 +468,8 @@ func (m selectModel) View() tea.View {
 		if m.selected[r.ID] {
 			markGlyph = glyph("◉", "*")
 		}
-		if m.spec.ReadOnly {
-			markGlyph = " " // viewer: keep the column width, show no mark
+		if m.spec.ReadOnly || m.spec.PickOne {
+			markGlyph = " " // viewer / single-pick: keep the column width, show no mark
 		}
 		cur := cursorGlyph(i == m.cursor)
 		if i == m.cursor {
@@ -445,6 +493,8 @@ func (m selectModel) View() tea.View {
 		if title == "" {
 			title = "View"
 		}
+	} else if m.spec.PickOne {
+		title = "Select to " + m.spec.Verb // cursor is the selection — no mark count
 	} else {
 		title = "Select to " + m.spec.Verb + dot + fmt.Sprintf("%d selected", m.countSelected())
 	}
@@ -456,11 +506,55 @@ func (m selectModel) View() tea.View {
 		box = box.Border(asciiBorder) // PuTTY-safe frame on non-UTF-8 terminals
 	}
 	out := selTitle.Render(title) + "\n" + box.Render(strings.Join(lines, "\n"))
+	if pane := m.previewPane(); pane != "" {
+		out += "\n" + pane
+	}
 	if m.filtering {
 		out += "\n" + selFilter.Render("/"+m.filter+glyph("▏", "|"))
 	}
 	out += "\n" + selFoot.Render(m.footer(dot))
 	return tea.NewView(out)
+}
+
+// previewPane renders the live pane under the list: a dim rule, then the cursor row's
+// Preview text hard-wrapped to the terminal width and cropped to the line budget
+// (the `i` overlay has the full text). "" hides the pane (no Preview / no budget / no rows).
+func (m selectModel) previewPane() string {
+	budget := m.previewBudget()
+	if !m.spec.Preview || budget < 3 || m.cursor >= len(m.visible) {
+		return ""
+	}
+	text := m.rows[m.visible[m.cursor]].Preview
+	w := max(m.width, 20)
+	rule := selFoot.Render(strings.Repeat(glyph("─", "-"), w))
+	lines := wrapLines(strings.TrimRight(text, "\n"), w)
+	if len(lines) > budget-1 {
+		ind := glyph("…", "...")
+		if m.spec.Detail != nil {
+			ind += " i full text"
+		}
+		lines = append(lines[:budget-2], selFoot.Render(ind))
+	}
+	return rule + "\n" + strings.Join(lines, "\n")
+}
+
+// wrapLines hard-wraps text to w columns (rune-counted) so a long body line can't
+// blow the pane's height budget via terminal soft-wrap.
+func wrapLines(text string, w int) []string {
+	var out []string
+	for _, ln := range strings.Split(text, "\n") {
+		r := []rune(ln)
+		if len(r) == 0 {
+			out = append(out, "")
+			continue
+		}
+		for len(r) > w {
+			out = append(out, string(r[:w]))
+			r = r[w:]
+		}
+		out = append(out, string(r))
+	}
+	return out
 }
 
 // footer builds the dim keybind hint line: viewer keys (move/filter/[info]/quit) in
@@ -478,6 +572,9 @@ func (m selectModel) footer(dot string) string {
 		return info(move+dot+"/ filter"+m.facetHint(dot)) + dot + "q quit"
 	}
 	foot := move + dot + "space select" + dot + "a all" + dot + "/ filter" + m.facetHint(dot)
+	if m.spec.PickOne {
+		foot = move + dot + "/ filter" + m.facetHint(dot)
+	}
 	return info(foot) + dot + "enter " + m.spec.Verb + dot + "q cancel"
 }
 

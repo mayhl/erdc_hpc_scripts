@@ -214,6 +214,38 @@ func classifyWip(lines []string, n int) (rows []ReviewRow, tagged, untag int) {
 	return rows, tagged, untag
 }
 
+// Message returns a commit's full message (subject + body) — the `i` inspect
+// overlay of the reviewed cut-point picker.
+func Message(hash string) (string, error) {
+	return out("show", "-s", "--format=%B", hash)
+}
+
+// WipMessages returns short-hash → full message for every commit above the signed
+// base, in ONE git call — the -i picker preloads its preview pane from this map, so
+// cursor moves never wait on a git spawn.
+func WipMessages() (map[string]string, error) {
+	base, err := wipBase()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := out("log", "--format=%h%x1f%B%x1e", wipRange(base))
+	if err != nil {
+		return nil, err
+	}
+	msgs := make(map[string]string)
+	for _, rec := range strings.Split(raw, "\x1e") {
+		if h, body, ok := strings.Cut(rec, "\x1f"); ok {
+			msgs[strings.TrimSpace(h)] = strings.TrimSpace(body)
+		}
+	}
+	return msgs, nil
+}
+
+// StripTag drops the [unreviewed] marker from a subject (no-op when untagged).
+func StripTag(subject string) string {
+	return strings.TrimPrefix(subject, unreviewed)
+}
+
 // PushRow is one line of the pushsigned preview.
 type PushRow struct {
 	Push    bool // in the contiguous signed prefix → would push

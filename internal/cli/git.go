@@ -41,11 +41,18 @@ func gitCmd() *cobra.Command {
 }
 
 func gitReviewedCmd() *cobra.Command {
+	var interactive bool
 	c := &cobra.Command{
 		Use:   "reviewed [N]",
 		Short: "Which [unreviewed] WIP `git reviewed` would un-tag (oldest-first).",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if interactive {
+				if len(args) > 0 {
+					return usageErr("a count and -i are mutually exclusive")
+				}
+				return gitReviewedPick()
+			}
 			n := 0 // 0 = all
 			if len(args) == 1 && args[0] != "all" {
 				v, err := strconv.Atoi(args[0])
@@ -66,9 +73,75 @@ func gitReviewedCmd() *cobra.Command {
 			return nil
 		},
 	}
+	c.Flags().BoolVarP(&interactive, "interactive", "i", false,
+		"pick the un-tag cut point in the interactive browser (prints the count; grv -i's front end)")
 	setHelpArgs(c,
 		[2]string{"[N]", "how many tags to preview un-tagging, oldest-first — a count or 'all' (default all)"})
 	return c
+}
+
+// gitReviewedPick is the `-i` cut-point picker: the [unreviewed] WIP oldest→newest,
+// `i` overlays the full message, and enter on a row means "un-tag through here".
+// It prints ONLY the picked count on stdout (0 = cancelled) — grv -i captures it and
+// does the actual strip — so the picker itself renders on stderr.
+func gitReviewedPick() error {
+	if !render.Interactive() {
+		return usageErr("mu git reviewed -i needs a terminal (stdin is not a tty)")
+	}
+	var tagged []git.ReviewRow // latest fetch, oldest→newest — maps the picked hash back to a count
+	fetch := func() []render.SelectRow {
+		r, err := git.ReviewedPreview(0)
+		if err != nil || !r.HasBase {
+			return nil
+		}
+		msgs, _ := git.WipMessages() // one bulk git call; a blip just blanks the pane
+		tagged = tagged[:0]
+		for _, row := range r.Rows {
+			if row.Act == "untag" { // n=0 preview marks every tagged commit untag
+				tagged = append(tagged, row)
+			}
+		}
+		rows := make([]render.SelectRow, 0, len(tagged))
+		for i, row := range tagged {
+			rows = append(rows, render.SelectRow{
+				ID:    row.Hash,
+				Cells: []string{strconv.Itoa(i + 1), row.Hash, git.StripTag(row.Subject)},
+				// Yellow hash matches git's own --oneline (the accepted git-native exception).
+				Hues:    []string{render.HueDim, render.HueWarn, ""},
+				Preview: msgs[row.Hash],
+			})
+		}
+		return rows
+	}
+	ids, err := render.Select(render.SelectSpec{
+		Verb:     "un-tag through",
+		Columns:  []string{"N", "HASH", "SUBJECT"},
+		Fetch:    fetch,
+		PickOne:  true,
+		StderrUI: true,
+		Preview:  true, // live pane follows the cursor; `i` keeps the full overlay
+		Detail: func(id string) string {
+			msg, err := git.Message(id)
+			if err != nil {
+				return ""
+			}
+			return msg
+		},
+	})
+	if err != nil {
+		return err
+	}
+	n := 0 // cancelled (or the list emptied under us) → 0, grv aborts
+	if len(ids) == 1 {
+		for i, row := range tagged {
+			if row.Hash == ids[0] {
+				n = i + 1
+				break
+			}
+		}
+	}
+	fmt.Println(n)
+	return nil
 }
 
 func gitSignwipCmd() *cobra.Command {
