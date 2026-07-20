@@ -119,18 +119,33 @@ func pbsUserSel(all bool, users, self string) string {
 
 type pbsAdapter struct{}
 
+// pbsJobRefs trims each id to its leading segment (before the first dot; array
+// brackets kept). qstat's listings report ids with a server suffix they TRUNCATE to
+// column width — feeding that mangled suffix back to qstat -f/qdel/qhold errors
+// with an invalid job id. Every command runs against the cluster's own server,
+// where the bare sequence number is unambiguous.
+func pbsJobRefs(ids []string) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = shortID(id)
+	}
+	return out
+}
+
 func (pbsAdapter) Name() string                { return "pbs" }
-func (pbsAdapter) KillCmd(ids []string) string { return "qdel " + quoteJoin(ids, " ") }
+func (pbsAdapter) KillCmd(ids []string) string { return "qdel " + quoteJoin(pbsJobRefs(ids), " ") }
 
 func (pbsAdapter) HoldCmd(ids []string, release bool) string {
 	bin := "qhold"
 	if release {
 		bin = "qrls"
 	}
-	return bin + " " + quoteJoin(ids, " ")
+	return bin + " " + quoteJoin(pbsJobRefs(ids), " ")
 }
 
-func (pbsAdapter) DetailCmd(ids []string) string { return "qstat -f " + quoteJoin(ids, " ") }
+func (pbsAdapter) DetailCmd(ids []string) string {
+	return "qstat -f " + quoteJoin(pbsJobRefs(ids), " ")
+}
 
 func (pbsAdapter) ListCmd(all bool, users, self string) string {
 	return "qstat -a" + pbsUserSel(all, users, self)

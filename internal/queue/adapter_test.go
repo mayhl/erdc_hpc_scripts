@@ -15,16 +15,18 @@ func TestAdapterFor(t *testing.T) {
 }
 
 func TestAdapterCmds(t *testing.T) {
-	pbsIDs := []string{"1284570.hpc1", "1284[7].hpc1"} // array brackets must stay quoted
+	// PBS ids normalize to the leading segment (listings truncate the server suffix,
+	// which qdel/qstat -f then reject); array brackets must stay, and stay quoted.
+	pbsIDs := []string{"1284570.hpc1.examp", "1284[7].hpc1"}
 	slurmIDs := []string{"9001", "9002"}
 	cases := []struct{ name, got, want string }{
-		{"pbs kill", For("pbs").KillCmd(pbsIDs), `qdel '1284570.hpc1' '1284[7].hpc1'`},
+		{"pbs kill", For("pbs").KillCmd(pbsIDs), `qdel '1284570' '1284[7]'`},
 		{"slurm kill", For("slurm").KillCmd(slurmIDs), `scancel '9001' '9002'`},
-		{"pbs hold", For("pbs").HoldCmd(pbsIDs, false), `qhold '1284570.hpc1' '1284[7].hpc1'`},
-		{"pbs rls", For("pbs").HoldCmd(pbsIDs, true), `qrls '1284570.hpc1' '1284[7].hpc1'`},
+		{"pbs hold", For("pbs").HoldCmd(pbsIDs, false), `qhold '1284570' '1284[7]'`},
+		{"pbs rls", For("pbs").HoldCmd(pbsIDs, true), `qrls '1284570' '1284[7]'`},
 		{"slurm hold", For("slurm").HoldCmd(slurmIDs, false), `scontrol hold '9001','9002'`},
 		{"slurm rls", For("slurm").HoldCmd([]string{"9001"}, true), `scontrol release '9001'`},
-		{"pbs detail", For("pbs").DetailCmd(pbsIDs), `qstat -f '1284570.hpc1' '1284[7].hpc1'`},
+		{"pbs detail", For("pbs").DetailCmd(pbsIDs), `qstat -f '1284570' '1284[7]'`},
 		{"slurm detail", For("slurm").DetailCmd(slurmIDs), `scontrol show job '9001','9002'`},
 		{"pbs submit", For("pbs").SubmitCmd("run.pbs", SubmitOpts{Account: "PROJ1", Queue: "standard"}), `qsub -A 'PROJ1' -q 'standard' 'run.pbs'`},
 		{"slurm submit", For("slurm").SubmitCmd("run.slurm", SubmitOpts{Account: "PROJ1"}), `sbatch -A 'PROJ1' 'run.slurm'`},

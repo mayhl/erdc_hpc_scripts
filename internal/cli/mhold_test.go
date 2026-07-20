@@ -3,10 +3,10 @@ package cli
 import "testing"
 
 func TestHoldCmd(t *testing.T) {
-	if got := holdCmd("pbs", false, []string{"1284570.hpc1", "1284571.hpc1"}); got != `qhold '1284570.hpc1' '1284571.hpc1'` {
+	if got := holdCmd("pbs", false, []string{"1284570.hpc1", "1284571.hpc1"}); got != `qhold '1284570' '1284571'` {
 		t.Errorf("pbs hold: %q", got)
 	}
-	if got := holdCmd("pbs", true, []string{"1284570.hpc1"}); got != `qrls '1284570.hpc1'` {
+	if got := holdCmd("pbs", true, []string{"1284570.hpc1"}); got != `qrls '1284570'` {
 		t.Errorf("pbs release: %q", got)
 	}
 	// SLURM uses scontrol hold/release with a comma list.
