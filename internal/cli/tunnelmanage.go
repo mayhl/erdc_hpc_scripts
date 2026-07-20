@@ -379,10 +379,7 @@ func tunnelCloseCmd() *cobra.Command {
 				for _, t := range targets {
 					render.Detail(fmt.Sprintf("%-6s %s  %s  job %s", t.ID, t.URL(), t.System, t.Job))
 				}
-				fmt.Fprintf(os.Stderr, "%s %d tunnel(s)? [y/N] ", verb, len(targets))
-				var r string
-				_, _ = fmt.Scanln(&r)
-				if strings.ToLower(strings.TrimSpace(r)) != "y" {
+				if !confirm("%s %d tunnel(s)?", verb, len(targets)) {
 					render.Info("aborted")
 					return nil
 				}

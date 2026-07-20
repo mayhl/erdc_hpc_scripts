@@ -180,10 +180,7 @@ func projectSubmit(node, caseDir, script, account, queue_ string, yes, dryRun, v
 		return nil
 	}
 	if !yes {
-		fmt.Fprintf(os.Stderr, "push + submit to %s? [y/N] ", node)
-		var r string
-		_, _ = fmt.Scanln(&r)
-		if strings.ToLower(strings.TrimSpace(r)) != "y" {
+		if !confirm("push + submit to %s?", node) {
 			render.Info("aborted")
 			return nil
 		}

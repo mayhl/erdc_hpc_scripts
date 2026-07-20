@@ -86,10 +86,7 @@ func logClearCmd() *cobra.Command {
 		RunE: func(_ *cobra.Command, _ []string) error {
 			path := render.EventLogPath()
 			if !yes {
-				fmt.Fprintf(os.Stderr, "clear %s? [y/N] ", path)
-				var r string
-				_, _ = fmt.Scanln(&r)
-				if strings.ToLower(strings.TrimSpace(r)) != "y" {
+				if !confirm("clear %s?", path) {
 					render.Info("aborted")
 					return nil
 				}

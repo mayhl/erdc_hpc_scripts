@@ -234,10 +234,7 @@ func jobSubCmd() *cobra.Command {
 				return nil
 			}
 			if !yes {
-				fmt.Fprintf(os.Stderr, "submit to %s? [y/N] ", label)
-				var r string
-				_, _ = fmt.Scanln(&r)
-				if strings.ToLower(strings.TrimSpace(r)) != "y" {
+				if !confirm("submit to %s?", label) {
 					render.Info("aborted")
 					return nil
 				}

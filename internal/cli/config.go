@@ -584,10 +584,7 @@ func configEdit(showAll bool) error {
 			return nil
 		}
 		showConfigDiff(old, merged)
-		fmt.Fprintf(os.Stderr, "write %d change(s) to %s? [y/N] ", len(changes)+len(actions), path)
-		var r string
-		_, _ = fmt.Scanln(&r)
-		if strings.ToLower(strings.TrimSpace(r)) != "y" {
+		if !confirm("write %d change(s) to %s?", len(changes)+len(actions), path) {
 			render.Info("aborted")
 			return nil
 		}
@@ -626,10 +623,7 @@ func configDecommission(node string) error {
 	}
 	render.Info(fmt.Sprintf("decommission %s (%s): drop its block, move nodes→decommissioned", node, cname))
 	showConfigDiff(old, merged)
-	fmt.Fprintf(os.Stderr, "write to %s? [y/N] ", path)
-	var r string
-	_, _ = fmt.Scanln(&r)
-	if strings.ToLower(strings.TrimSpace(r)) != "y" {
+	if !confirm("write to %s?", path) {
 		render.Info("aborted")
 		return nil
 	}

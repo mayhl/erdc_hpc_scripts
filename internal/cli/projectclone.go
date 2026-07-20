@@ -82,10 +82,7 @@ func projectClone(node, path string, yes, dryRun bool) error {
 		return nil
 	}
 	if !yes {
-		fmt.Fprintf(os.Stderr, "init + push to %s? [y/N] ", node)
-		var r string
-		_, _ = fmt.Scanln(&r)
-		if strings.ToLower(strings.TrimSpace(r)) != "y" {
+		if !confirm("init + push to %s?", node) {
 			render.Info("aborted")
 			return nil
 		}

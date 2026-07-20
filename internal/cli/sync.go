@@ -172,10 +172,7 @@ func syncConfigTOML(target string, o syncOpts) error {
 	}
 	showConfigDiff(dstText, merged)
 	if !o.yes {
-		fmt.Fprintf(os.Stderr, "write config.toml to %s? [y/N] ", dstDesc)
-		var r string
-		_, _ = fmt.Scanln(&r)
-		if strings.ToLower(strings.TrimSpace(r)) != "y" {
+		if !confirm("write config.toml to %s?", dstDesc) {
 			render.Info("aborted config.toml")
 			return nil
 		}

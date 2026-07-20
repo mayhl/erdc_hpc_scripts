@@ -168,10 +168,7 @@ func projectSyncPrune(o projSyncOpts) error {
 		return nil
 	}
 	if !o.yes {
-		fmt.Fprintf(os.Stderr, "DELETE %d file(s) on %s? [y/N] ", total, o.node)
-		var r string
-		_, _ = fmt.Scanln(&r)
-		if strings.ToLower(strings.TrimSpace(r)) != "y" {
+		if !confirm("DELETE %d file(s) on %s?", total, o.node) {
 			render.Info("aborted")
 			return nil
 		}

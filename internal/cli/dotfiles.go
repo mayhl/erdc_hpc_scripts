@@ -128,10 +128,7 @@ func pullDotfiles(target, configDir string, yes bool) error {
 		fmt.Fprintln(os.Stderr, in)
 	}
 	if !yes {
-		fmt.Fprintf(os.Stderr, "merge %s's .config into %s? [y/N] ", target, configDir)
-		var r string
-		_, _ = fmt.Scanln(&r)
-		if strings.ToLower(strings.TrimSpace(r)) != "y" {
+		if !confirm("merge %s's .config into %s?", target, configDir) {
 			render.Info("aborted .config")
 			return nil
 		}

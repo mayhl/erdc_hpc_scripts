@@ -464,14 +464,11 @@ func syncShared(root string, o projSyncOpts) error {
 		return nil
 	}
 	if !o.yes {
-		prompt := fmt.Sprintf("push %d new file(s) to %s? [y/N] ", totalNew, o.node)
+		prompt := fmt.Sprintf("push %d new file(s) to %s?", totalNew, o.node)
 		if o.force && totalUpd > 0 {
-			prompt = fmt.Sprintf("push %d new + OVERWRITE %d differing file(s) on %s? [y/N] ", totalNew, totalUpd, o.node)
+			prompt = fmt.Sprintf("push %d new + OVERWRITE %d differing file(s) on %s?", totalNew, totalUpd, o.node)
 		}
-		fmt.Fprint(os.Stderr, prompt)
-		var r string
-		_, _ = fmt.Scanln(&r)
-		if strings.ToLower(strings.TrimSpace(r)) != "y" {
+		if !confirm("%s", prompt) {
 			render.Info("aborted")
 			return nil
 		}
@@ -702,10 +699,7 @@ func projectSyncPull(o projSyncOpts) error {
 		return nil
 	}
 	if !o.yes {
-		fmt.Fprintf(os.Stderr, "pull %d file(s) from %s? [y/N] ", pullN, o.node)
-		var r string
-		_, _ = fmt.Scanln(&r)
-		if strings.ToLower(strings.TrimSpace(r)) != "y" {
+		if !confirm("pull %d file(s) from %s?", pullN, o.node) {
 			render.Info("aborted")
 			return nil
 		}

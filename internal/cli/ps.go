@@ -159,10 +159,7 @@ func psKillCmd() *cobra.Command {
 func killProcs(matched []proc.Process, sig syscall.Signal, yes bool) error {
 	render.ProcTable(fmt.Sprintf("Kill %d process(es) — %s", len(matched), sigName(sig)), procRows(matched))
 	if !yes {
-		fmt.Fprintf(os.Stderr, "kill %d process(es) with %s? [y/N] ", len(matched), sigName(sig))
-		var r string
-		_, _ = fmt.Scanln(&r)
-		if strings.ToLower(strings.TrimSpace(r)) != "y" {
+		if !confirm("kill %d process(es) with %s?", len(matched), sigName(sig)) {
 			render.Info("aborted")
 			return nil
 		}

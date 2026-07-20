@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -115,10 +114,7 @@ func mstatInteractive(node string, who userSel) error {
 func cancelJobs(label, scheduler string, matched []queue.Job, run func(string) error, yes bool) error {
 	render.JobsTable("Cancel on "+label, config.User(), toJobRows(matched), render.JobCols{})
 	if !yes {
-		fmt.Fprintf(os.Stderr, "cancel %d job(s) on %s? [y/N] ", len(matched), label)
-		var r string
-		_, _ = fmt.Scanln(&r)
-		if strings.ToLower(strings.TrimSpace(r)) != "y" {
+		if !confirm("cancel %d job(s) on %s?", len(matched), label) {
 			render.Info("aborted")
 			return nil
 		}
