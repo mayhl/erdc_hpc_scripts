@@ -80,14 +80,8 @@ func (o *onboard) run(nodeOrTarget string) error {
 	}
 	// Preflight (local): a real ssh target, a toolchain to cross-build with, and a
 	// .config git repo whose whitelist keeps secrets out of the push.
-	if strings.Contains(target, " ") {
-		return usageErr("target has a space — pass a node name or a real user@host")
-	}
-	if _, err := exec.LookPath("go"); err != nil {
-		return runErr("go not on PATH (needed to cross-build mu)")
-	}
-	if !isDir(filepath.Join(o.repo, "cmd", "mu")) {
-		return runErr("no cmd/mu under --repo %s", o.repo)
+	if err := o.preflightPush(target); err != nil {
+		return err
 	}
 	if err := exec.Command("git", "-C", o.configDir, "rev-parse", "--git-dir").Run(); err != nil {
 		return runErr("--config-dir %s is not a git repo", o.configDir)
@@ -107,6 +101,31 @@ func (o *onboard) run(nodeOrTarget string) error {
 		render.OK("ssh ok")
 	}
 
+	if err := o.buildAndPushMu(target); err != nil {
+		return err
+	}
+
+	// Push tracked .config — git archive HEAD is the whitelist: committed files only,
+	// no .git, no untracked secrets. This is the default-deny push (leak-safe by design).
+	if o.doConfig {
+		if err := pushConfigBundle(target, o.configDir, o.force, o.dryRun); err != nil {
+			return err
+		}
+	}
+
+	// Seed config.toml from the example (never clobber an existing one).
+	if err := o.seedConfig(target); err != nil {
+		return err
+	}
+
+	o.printNextSteps(target)
+	render.OK("onboard " + dryLabel(o.dryRun) + "complete")
+	return nil
+}
+
+// buildAndPushMu is the binary leg shared by onboard and `setup push`: cross-build a
+// linux mu from the checkout, land it via the cat+mv push, and verify it runs.
+func (o *onboard) buildAndPushMu(target string) error {
 	// Cross-build mu (always, even in dry-run — it validates the tree compiles).
 	tmp, err := os.MkdirTemp("", "mu-onboard")
 	if err != nil {
@@ -152,22 +171,77 @@ func (o *onboard) run(nodeOrTarget string) error {
 			render.Detail("target mu: " + strings.TrimSpace(string(out)))
 		}
 	}
+	return nil
+}
 
-	// Push tracked .config — git archive HEAD is the whitelist: committed files only,
-	// no .git, no untracked secrets. This is the default-deny push (leak-safe by design).
-	if o.doConfig {
-		if err := pushConfigBundle(target, o.configDir, o.force, o.dryRun); err != nil {
-			return err
-		}
+// preflightPush is the local sanity shared by onboard and `setup push`: a real ssh
+// target, a Go toolchain, and a cmd/mu to cross-build.
+func (o *onboard) preflightPush(target string) error {
+	if strings.Contains(target, " ") {
+		return usageErr("target has a space — pass a node name or a real user@host")
 	}
+	if _, err := exec.LookPath("go"); err != nil {
+		return runErr("go not on PATH (needed to cross-build mu)")
+	}
+	if !isDir(filepath.Join(o.repo, "cmd", "mu")) {
+		return runErr("no cmd/mu under --repo %s", o.repo)
+	}
+	return nil
+}
 
-	// Seed config.toml from the example (never clobber an existing one).
-	if err := o.seedConfig(target); err != nil {
+// setupPushCmd is `mu setup push <node>`: cross-build and push JUST the mu binary —
+// the daily-iteration slice of onboard, which also bundles .config, seeds config.toml,
+// and prints the wiring. Use this to land a fresh build on an already-onboarded box.
+func setupPushCmd() *cobra.Command {
+	o := onboard{goarch: "amd64", bin: "~/.local/bin/mu"}
+	c := &cobra.Command{
+		Use:   "push <node|user@host>",
+		Short: "Cross-build mu and push just the binary to an onboarded box.",
+		Long: "Cross-build a linux mu from this checkout and land it on the target over the\n" +
+			"same restricted-SFTP-safe push onboard uses (ssh cat + atomic mv, so a running\n" +
+			"mu keeps its old inode). Nothing else is touched — no .config bundle, no\n" +
+			"config.toml seed. The daily-iteration complement to `mu setup onboard`.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if o.repo == "" {
+				o.repo = defaultRepo()
+			}
+			return o.runPush(args[0])
+		},
+	}
+	setHelpArgs(c,
+		[2]string{"<node|user@host>", "configured node alias, or a raw ssh target"})
+	f := c.Flags()
+	f.StringVar(&o.repo, "repo", "", "mayhl_utils checkout to cross-build from (default $MU_ROOT or ~/repos/mayhl_utils)")
+	f.StringVar(&o.goarch, "goarch", o.goarch, "target CPU arch for the mu cross-build")
+	f.StringVar(&o.bin, "bin", o.bin, "where mu lands on the target")
+	f.BoolVar(&o.dryRun, "dry-run", false, "print each mutating step without running it")
+	return c
+}
+
+func (o *onboard) runPush(nodeOrTarget string) error {
+	target, err := hpc.Resolve(nodeOrTarget)
+	if err != nil {
+		return usageErr("%s", err)
+	}
+	if err := o.preflightPush(target); err != nil {
 		return err
 	}
-
-	o.printNextSteps(target)
-	render.OK("onboard " + dryLabel(o.dryRun) + "complete")
+	tag := ""
+	if o.dryRun {
+		tag = "   [DRY RUN]"
+	}
+	render.Info(fmt.Sprintf("push → %s   (mu binary only, linux/%s)%s", target, o.goarch, tag))
+	if !o.dryRun {
+		if err := exec.Command("ssh", "-q", "-o", "ConnectTimeout=15", target, "true").Run(); err != nil {
+			return runErr("cannot ssh to %s (auth/PKI? host? must be a real ssh target)", target)
+		}
+		render.OK("ssh ok")
+	}
+	if err := o.buildAndPushMu(target); err != nil {
+		return err
+	}
+	render.OK("push " + dryLabel(o.dryRun) + "complete")
 	return nil
 }
 
