@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/mayhl/mayhl_utils/internal/config"
 	"github.com/mayhl/mayhl_utils/internal/hpc"
 	"github.com/mayhl/mayhl_utils/internal/queue"
@@ -102,6 +104,33 @@ func allSystemsScope() []queueTarget {
 		targets = append(targets, queueTarget{label: c.Name, scheduler: c.Scheduler, node: node})
 	}
 	return targets
+}
+
+// scopeTargets picks the collate fan-out for a show-verb's -f/-e pair: the fleet
+// by default, widened to every configured cluster under --all-systems.
+func scopeTargets(all bool) ([]queueTarget, string) {
+	if all {
+		return allSystemsScope(), "all"
+	}
+	return fleetScope(), "fleet"
+}
+
+// siteScopeHelp carries a verb's own wording for the four WHERE flags — the
+// registration is shared, the help text is not.
+type siteScopeHelp struct {
+	node, local, fleet, all string
+}
+
+// addSiteScopeFlags registers the WHERE flags the site show-verbs share
+// (-N/--node, -l/--local, -f/--fleet, -e/--all-systems), their mutual
+// exclusion, and --node completion. The queue-verb analog is addQueueScopeFlags.
+func addSiteScopeFlags(c *cobra.Command, node *string, local, fleet, all *bool, help siteScopeHelp) {
+	c.Flags().StringVarP(node, "node", "N", "", help.node)
+	c.Flags().BoolVarP(local, "local", "l", false, help.local)
+	c.Flags().BoolVarP(fleet, "fleet", "f", false, help.fleet)
+	c.Flags().BoolVarP(all, "all-systems", "e", false, help.all)
+	c.MarkFlagsMutuallyExclusive("node", "local", "fleet", "all-systems")
+	completeNodeFlag(c)
 }
 
 // collateJobs fans out over the given targets concurrently, each fetched with a bounded

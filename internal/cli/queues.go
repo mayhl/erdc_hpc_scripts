@@ -60,12 +60,8 @@ func hpcQueuesCmd() *cobra.Command {
 			)
 			switch {
 			case fleet, allSystems:
-				targets, scope := fleetScope(), "fleet"
-				if allSystems {
-					targets, scope = allSystemsScope(), "all"
-				}
 				var down []string
-				label, qs, down, err = collateQueues(targets, scope)
+				label, qs, down, err = collateQueues(scopeTargets(allSystems))
 				for _, d := range down {
 					render.Warn(d)
 				}
@@ -123,16 +119,16 @@ func hpcQueuesCmd() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().StringVarP(&node, "node", "N", "", "fetch queues from this node (else read stdin)")
-	c.Flags().BoolVarP(&local, "local", "l", false, "run show_queues on the current cluster, locally (no ssh)")
-	c.Flags().BoolVarP(&fleet, "fleet", "f", false, "collate the fleet's queues (adds a System column)")
-	c.Flags().BoolVarP(&allSystems, "all-systems", "e", false, "collate every configured cluster, incl. inactive")
+	addSiteScopeFlags(c, &node, &local, &fleet, &allSystems, siteScopeHelp{
+		node:  "fetch queues from this node (else read stdin)",
+		local: "run show_queues on the current cluster, locally (no ssh)",
+		fleet: "collate the fleet's queues (adds a System column)",
+		all:   "collate every configured cluster, incl. inactive",
+	})
 	c.Flags().BoolVarP(&all, "all", "a", false, "include routing/admin (non-Exe) queues (default: only submittable Exe queues)")
 	c.Flags().BoolVarP(&interactive, "interactive", "i", false, "browse queues in a live-filterable picker (type to narrow, `i` to inspect)")
 	c.Flags().BoolVar(&jsonOut, "json", false, "emit queues as JSON (complete, untruncated) instead of a table")
-	c.MarkFlagsMutuallyExclusive("node", "local", "fleet", "all-systems")
 	c.MarkFlagsMutuallyExclusive("json", "interactive")
-	completeNodeFlag(c)
 	return c
 }
 

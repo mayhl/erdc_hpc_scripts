@@ -48,10 +48,7 @@ func hpcUsageCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if fleet || all {
-				targets, scope := fleetScope(), "fleet"
-				if all {
-					targets, scope = allSystemsScope(), "all"
-				}
+				targets, scope := scopeTargets(all)
 				label, infos, down, err := collateSite(targets, scope, showUsageCmd, parseUsageWithFY,
 					func(r *queue.UsageInfo, lbl string) { r.System = lbl })
 				if err != nil {
@@ -127,17 +124,17 @@ func hpcUsageCmd() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().StringVarP(&node, "node", "N", "", "fetch usage from this node (else read stdin)")
-	c.Flags().BoolVarP(&local, "local", "l", false, "run show_usage on the current cluster, locally (no ssh)")
-	c.Flags().BoolVarP(&fleet, "fleet", "f", false, "collate the fleet's usage (adds a System column)")
-	c.Flags().BoolVarP(&all, "all-systems", "e", false, "collate every configured cluster, incl. inactive")
+	addSiteScopeFlags(c, &node, &local, &fleet, &all, siteScopeHelp{
+		node:  "fetch usage from this node (else read stdin)",
+		local: "run show_usage on the current cluster, locally (no ssh)",
+		fleet: "collate the fleet's usage (adds a System column)",
+		all:   "collate every configured cluster, incl. inactive",
+	})
 	c.Flags().BoolVar(&raw, "raw", false, "print show_usage's own output verbatim")
 	c.Flags().BoolVar(&jsonOut, "json", false, "emit the parsed rows as JSON (verbatim fields + fy_left) instead of a table")
-	c.MarkFlagsMutuallyExclusive("node", "local", "fleet", "all-systems")
 	c.MarkFlagsMutuallyExclusive("json", "raw")
 	c.MarkFlagsMutuallyExclusive("raw", "fleet")
 	c.MarkFlagsMutuallyExclusive("raw", "all-systems")
-	completeNodeFlag(c)
 	return c
 }
 

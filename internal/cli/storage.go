@@ -45,11 +45,7 @@ func hpcStorageCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if fleet || all {
-				targets, scope := fleetScope(), "fleet"
-				if all {
-					targets, scope = allSystemsScope(), "all"
-				}
-				label, infos, down, err := collateStorage(targets, scope)
+				label, infos, down, err := collateStorage(scopeTargets(all))
 				if err != nil {
 					return err
 				}
@@ -102,17 +98,17 @@ func hpcStorageCmd() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().StringVarP(&node, "node", "N", "", "fetch storage from this node (else read stdin)")
-	c.Flags().BoolVarP(&local, "local", "l", false, "run show_storage on the current cluster, locally (no ssh)")
-	c.Flags().BoolVarP(&fleet, "fleet", "f", false, "collate the fleet's storage (adds a System column)")
-	c.Flags().BoolVarP(&all, "all-systems", "e", false, "collate every configured cluster, incl. inactive")
+	addSiteScopeFlags(c, &node, &local, &fleet, &all, siteScopeHelp{
+		node:  "fetch storage from this node (else read stdin)",
+		local: "run show_storage on the current cluster, locally (no ssh)",
+		fleet: "collate the fleet's storage (adds a System column)",
+		all:   "collate every configured cluster, incl. inactive",
+	})
 	c.Flags().BoolVar(&raw, "raw", false, "print show_storage's own output verbatim")
 	c.Flags().BoolVar(&jsonOut, "json", false, "emit the parsed rows as JSON (raw KB, untruncated) instead of a table")
-	c.MarkFlagsMutuallyExclusive("node", "local", "fleet", "all-systems")
 	c.MarkFlagsMutuallyExclusive("json", "raw")
 	c.MarkFlagsMutuallyExclusive("raw", "fleet")
 	c.MarkFlagsMutuallyExclusive("raw", "all-systems")
-	completeNodeFlag(c)
 	return c
 }
 
