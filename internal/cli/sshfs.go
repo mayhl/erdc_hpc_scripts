@@ -25,7 +25,7 @@ func sshfsCmd() *cobra.Command {
 	setHelpShortcuts(
 		c,
 		[2]string{"hcd <name>", "mount if needed + cd into it (mu sshfs mount)"},
-		[2]string{"hmt <name>…", "mount, no cd; hmt @group / --all (mu sshfs mount)"},
+		[2]string{"hmt <name>…", "mount, no cd; @group / --all / --stale (mu sshfs mount)"},
 		[2]string{"hls", "list mounts with live status (mu sshfs list)"},
 		[2]string{"hadd", "register a new mount (mu sshfs add)"},
 		[2]string{"hset", "change/repoint a mount (mu sshfs set)"},
@@ -74,14 +74,14 @@ func sshfsListCmd() *cobra.Command {
 }
 
 func sshfsMountCmd() *cobra.Command {
-	var all bool
+	var all, stale, dryRun bool
 	c := &cobra.Command{
 		Use:   "mount <name>...",
-		Short: "Mount configured names (--all mounts every registered). Auto-remounts a stale mount.",
+		Short: "Mount configured names (--all mounts every registered, --stale remounts hung ones).",
 		Args: func(_ *cobra.Command, args []string) error {
-			if all {
+			if all || stale {
 				if len(args) != 0 {
-					return errors.New("cannot name a mount together with --all")
+					return errors.New("cannot name a mount together with --all/--stale")
 				}
 				return nil
 			}
@@ -89,6 +89,15 @@ func sshfsMountCmd() *cobra.Command {
 		},
 		ValidArgsFunction: mountCompletion,
 		RunE: func(_ *cobra.Command, args []string) error {
+			if all && stale {
+				return usageErr("--all and --stale are mutually exclusive")
+			}
+			if dryRun && !stale {
+				return usageErr("--dry-run only applies with --stale")
+			}
+			if stale {
+				return codeErr(runMountStale(dryRun, render.IsVerbose()))
+			}
 			names := args
 			if all {
 				names = registeredMountNames()
@@ -112,7 +121,61 @@ func sshfsMountCmd() *cobra.Command {
 	setHelpArgs(c, [2]string{"<name>", "registered mount name, or @group for every mount in a group"})
 	// -v (global) shows the remote target + verbose ssh output
 	c.Flags().BoolVarP(&all, "all", "a", false, "mount every registered mount")
+	c.Flags().BoolVar(&stale, "stale", false, "remount only mounts that have gone stale (hung)")
+	c.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "with --stale: report stale mounts without remounting (exit non-zero if any)")
 	return c
+}
+
+// staleNames returns the names whose status func reports "hung" — the stale mounts
+// (in the mount table but not responding). Factored out so the filter is testable
+// without shelling out to `mount`/`ls`.
+func staleNames(names []string, status func(string) string) []string {
+	var out []string
+	for _, n := range names {
+		if status(n) == "hung" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// runMountStale scans every registered mount and re-establishes only the ones that
+// have gone stale. With dryRun it reports them and exits non-zero if any (a scriptable
+// health check); otherwise each is torn down and remounted via runMount's hung path.
+// Healthy and unmounted mounts are left alone — this revives what died, it never mounts
+// something that was never up.
+func runMountStale(dryRun, verbose bool) int {
+	stale := staleNames(registeredMountNames(), sshfs.Status)
+	if len(stale) == 0 {
+		render.Info("no stale mounts")
+		return 0
+	}
+	if dryRun {
+		for _, n := range stale {
+			render.Warn(n + ": stale (hung)")
+		}
+		render.Info(fmt.Sprintf("%d stale mount(s) — remount with `mu sshfs mount --stale`", len(stale)))
+		return 1
+	}
+	total := len(stale)
+	failed := 0
+	for i, n := range stale {
+		var rc int
+		if verbose {
+			rc = runMount(n, true, "", false)
+		} else {
+			rc = runMount(n, false, fmt.Sprintf("Remounting %s  %d/%d", n, i+1, total), true)
+		}
+		if rc != 0 {
+			failed++
+		}
+	}
+	if failed > 0 {
+		render.Warn(fmt.Sprintf("remounted %d/%d stale (%d failed)", total-failed, total, failed))
+		return 1
+	}
+	render.OK(fmt.Sprintf("remounted %d/%d stale", total, total))
+	return 0
 }
 
 // registeredMountNames returns all registered mount names, sorted.
