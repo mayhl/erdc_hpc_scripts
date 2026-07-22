@@ -406,21 +406,28 @@ func umountAll() error {
 }
 
 func sshfsPathCmd() *cobra.Command {
+	var remote bool
 	c := &cobra.Command{
 		Use:               "path <name>",
-		Short:             "Print the local mount dir (used by hcd to cd). stdout = just the path.",
+		Short:             "Print the local mount dir (used by hcd to cd), or the remote node:path with -r. stdout = just the path.",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: mountCompletion,
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := args[0]
-			if _, ok := sshfs.ReadRegistry()[name]; !ok {
+			m, ok := sshfs.ReadRegistry()[name]
+			if !ok {
 				return usageErr("unknown mount: %s", name)
+			}
+			if remote {
+				fmt.Println(m.Node + ":" + m.Path)
+				return nil
 			}
 			fmt.Println(sshfs.MountDir(name))
 			return nil
 		},
 	}
 	setHelpArgs(c, [2]string{"<name>", "registered mount name (see mu sshfs list)"})
+	c.Flags().BoolVarP(&remote, "remote", "r", false, "print the remote node:path instead of the local dir")
 	return c
 }
 
