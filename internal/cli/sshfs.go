@@ -439,8 +439,11 @@ func sshfsAddCmd() *cobra.Command {
 		Short: "Register a new mount (name → node:path). Does not mount.",
 		Args:  cobra.ExactArgs(3),
 		ValidArgsFunction: func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-			if len(args) == 1 { // completing the node arg
+			switch len(args) {
+			case 1: // node
 				return hpc.CompleteNode(toComplete), cobra.ShellCompDirectiveNoFileComp
+			case 2: // remote path on the chosen node (dirs, from the cached completer)
+				return completeRemotePath(args[1], toComplete, true)
 			}
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		},
@@ -558,6 +561,24 @@ Examples:
 	c.Flags().StringVar(&path, "path", "", "repoint to a different remote path")
 	c.Flags().BoolVar(&ro, "ro", false, "make read-only (remounts if live)")
 	c.Flags().BoolVar(&rw, "rw", false, "make read-write (remounts if live)")
+	// --path completes remote dirs on the mount's node (or --node, if being repointed).
+	_ = c.RegisterFlagCompletionFunc("path", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		n := ""
+		if m, ok := sshfs.ReadRegistry()[args[0]]; ok {
+			n = m.Node
+		}
+		if nf, _ := cmd.Flags().GetString("node"); nf != "" {
+			n = nf
+		}
+		if n == "" {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		return completeRemotePath(n, toComplete, true)
+	})
+	completeNodeFlag(c) // --node completes cluster names
 	return c
 }
 

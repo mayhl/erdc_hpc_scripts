@@ -51,6 +51,29 @@ func RemoteExec(target, remoteCmd string) (string, error) {
 	return stdout.String(), nil
 }
 
+// RemoteProbe runs remoteCmd on target for completion/autocomplete. It rides an EXISTING
+// ControlMaster socket if one is up (instant, already authenticated) but NEVER creates a
+// master and NEVER prompts (BatchMode + a 1s connect timeout), so a cold host fails fast
+// instead of blocking a TAB or triggering a CAC/PIN prompt. Returns the output and whether
+// it succeeded within the deadline. The transport is MU_SSH, same as RemoteExec.
+func RemoteProbe(target, remoteCmd string) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	args := []string{
+		"-q",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=1",
+		"-o", "ControlMaster=no",
+		"-o", "ControlPath=" + controlPath(target),
+		target, remoteCmd,
+	}
+	var buf bytes.Buffer
+	cmd := exec.CommandContext(ctx, config.SSHCommand(), args...)
+	cmd.Stdout = &buf
+	err := cmd.Run()
+	return buf.String(), err == nil && ctx.Err() == nil
+}
+
 // connectTimeout (seconds) bounds ssh's connect phase for the interactive
 // single-host path, so a dead login node fails fast (via classify → "unreachable")
 // instead of hanging on TCP defaults. Overridable via MU_SSH_CONNECT_TIMEOUT. It

@@ -27,7 +27,7 @@ func cpPushCmd() *cobra.Command {
 		Long: "Copy a local path TO a node (rsync push), with a live progress bar.\n" +
 			"With no <dst> the path lands in your home dir on the node.\n\n" + hpc.NodesHint(),
 		Args:              cobra.RangeArgs(2, 3),
-		ValidArgsFunction: nodeCompletion,
+		ValidArgsFunction: cpPushCompletion,
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runTransfer(true, args[0], args[1], transferDst(args, ""), o, render.IsVerbose())
 		},
@@ -48,7 +48,7 @@ func cpPullCmd() *cobra.Command {
 		Long: "Copy a path FROM a node TO local (rsync pull), with a live progress bar.\n" +
 			"With no <dst> the path lands in the current directory.\n\n" + hpc.NodesHint(),
 		Args:              cobra.RangeArgs(2, 3),
-		ValidArgsFunction: nodeCompletion,
+		ValidArgsFunction: cpPullCompletion,
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runTransfer(false, args[0], args[1], transferDst(args, "."), o, render.IsVerbose())
 		},
@@ -134,11 +134,31 @@ func addTransferFlags(cmd *cobra.Command, o *rsync.Opts) {
 	// per-file output (vs the aggregate bar) rides the global -v now; no local flag
 }
 
-// nodeCompletion completes the first argument (node) from the configured
-// inventory; later arguments (src/dst) fall back to file-path completion.
-func nodeCompletion(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	if len(args) != 0 {
-		return nil, cobra.ShellCompDirectiveDefault
+// cpPushCompletion: push <node> <local-src> [remote-dst]. The node completes from the
+// inventory, the src is a LOCAL path (shell file completion), and the dst is a remote dir
+// on the node (cached remote completer).
+func cpPushCompletion(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	switch len(args) {
+	case 0:
+		return hpc.CompleteNode(toComplete), cobra.ShellCompDirectiveNoFileComp
+	case 1:
+		return nil, cobra.ShellCompDirectiveDefault // local src → shell file completion
+	case 2:
+		return completeRemotePath(args[0], toComplete, true) // remote dst (a directory)
 	}
-	return hpc.CompleteNode(toComplete), cobra.ShellCompDirectiveNoFileComp
+	return nil, cobra.ShellCompDirectiveNoFileComp
+}
+
+// cpPullCompletion: pull <node> <remote-src> [local-dst]. The src is a remote path on the
+// node (files AND dirs, cached), the dst is a LOCAL path.
+func cpPullCompletion(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	switch len(args) {
+	case 0:
+		return hpc.CompleteNode(toComplete), cobra.ShellCompDirectiveNoFileComp
+	case 1:
+		return completeRemotePath(args[0], toComplete, false) // remote src → files + dirs
+	case 2:
+		return nil, cobra.ShellCompDirectiveDefault // local dst
+	}
+	return nil, cobra.ShellCompDirectiveNoFileComp
 }
