@@ -15,8 +15,8 @@ import (
 )
 
 func hpcQueueCmd() *cobra.Command {
-	var node, userList string
-	var allUsers, jsonOut, local, fleet, all, start, interactive bool
+	var node, userList, fleet string
+	var allUsers, jsonOut, local, all, start, interactive bool
 	c := &cobra.Command{
 		Use:   "queue",
 		Short: "Render a scheduler queue (PBS qstat / SLURM squeue) as a house table.",
@@ -24,7 +24,8 @@ func hpcQueueCmd() *cobra.Command {
 			"(PBS qstat / SLURM squeue). Three WHERE scopes select how wide to look\n" +
 			"(orthogonal to WHO: default you, -u alice,bob specific users, -a everyone):\n\n" +
 			"    -l --local         current cluster only, run locally — no ssh (default on HPC)\n" +
-			"    -f --fleet         the `fleet` node list, else active clusters (default off HPC)\n" +
+			"    -f --fleet[=list]  the `fleet` node list, else active clusters (default off HPC);\n" +
+			"                       -f=node1,node2 narrows to an ad-hoc subset (attach with =)\n" +
 			"    -e --all-systems   every distinct queue: the fleet plus one node per cluster\n" +
 			"                       not already in it (incl. inactive)\n\n" +
 			"Bare `mstat` resolves by location: on a login node it's --local; off HPC,\n" +
@@ -33,6 +34,7 @@ func hpcQueueCmd() *cobra.Command {
 			"column; an unreachable system degrades to a warning, never a hang:\n" +
 			"    mstat                          # local on HPC, fleet off it\n" +
 			"    mstat -f -a                    # the fleet, all users\n" +
+			"    mstat -f=hpc1,hpc2             # just these two nodes (attach the list with =)\n" +
 			"    mstat -e -a                    # every system, all users\n\n" +
 			"--node fetches one cluster over remote-exec (qstat vs squeue from its\n" +
 			"configured scheduler); with neither --node nor a scope flag, a listing piped\n" +
@@ -46,8 +48,8 @@ func hpcQueueCmd() *cobra.Command {
 				return err
 			}
 			if interactive {
-				if fleet || all {
-					return mstatInteractiveCollate(all, who)
+				if fleet != "" || all {
+					return mstatInteractiveCollate(fleet, all, who)
 				}
 				return mstatInteractive(node, who)
 			}
@@ -61,10 +63,12 @@ func hpcQueueCmd() *cobra.Command {
 				label = node
 				hooksCh = fetchHookProgress(node, false)
 				jobs, err = fetchJobs(node, who)
-			case all:
-				label, jobs, fleetProg, down, err = collateJobs(allSystemsScope(), "all", who)
-			case fleet:
-				label, jobs, fleetProg, down, err = collateJobs(fleetScope(), "fleet", who)
+			case all, fleet != "":
+				var targets []queueTarget
+				var scope string
+				if targets, scope, err = scopeTargets(fleet, all); err == nil {
+					label, jobs, fleetProg, down, err = collateJobs(targets, scope, who)
+				}
 			case local:
 				// Explicit --local: current cluster, run locally. Off-HPC this errors
 				// (no scheduler here) rather than silently widening.
@@ -108,7 +112,7 @@ func hpcQueueCmd() *cobra.Command {
 	addSiteScopeFlags(c, &node, &local, &fleet, &all, siteScopeHelp{
 		node:  "fetch the queue from this node (else read stdin)",
 		local: "current cluster only, fetched locally (default on HPC)",
-		fleet: "collate the `fleet` node list, else active clusters (default off HPC)",
+		fleet: "collate the `fleet` node list, else active clusters (default off HPC); -f=n1,n2 = an ad-hoc subset",
 		all:   "collate every distinct queue: the fleet plus one node per cluster not in it, incl. inactive",
 	})
 	c.Flags().BoolVarP(&allUsers, "all-users", "a", false, "all users' jobs (default: yours)")

@@ -26,8 +26,8 @@ const showStorageCmd = "show_storage"
 // else stdin is parsed. No System column — single-cluster views carry the cluster in the
 // title (a future collate view would restore it).
 func hpcStorageCmd() *cobra.Command {
-	var node string
-	var local, fleet, all, raw, jsonOut bool
+	var node, fleet string
+	var local, all, raw, jsonOut bool
 	c := &cobra.Command{
 		Use:   "storage",
 		Short: "Show disk and file quota usage (show_storage) as a house table.",
@@ -44,8 +44,12 @@ func hpcStorageCmd() *cobra.Command {
 			"    hpc1 show_storage | mu hpc storage",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if fleet || all {
-				label, infos, down, err := collateStorage(scopeTargets(all))
+			if fleet != "" || all {
+				targets, scope, err := scopeTargets(fleet, all)
+				if err != nil {
+					return err
+				}
+				label, infos, down, err := collateStorage(targets, scope)
 				if err != nil {
 					return err
 				}

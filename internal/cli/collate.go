@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -106,13 +107,67 @@ func allSystemsScope() []queueTarget {
 	return targets
 }
 
-// scopeTargets picks the collate fan-out for a show-verb's -f/-e pair: the fleet
-// by default, widened to every configured cluster under --all-systems.
-func scopeTargets(all bool) ([]queueTarget, string) {
+// -f/--fleet's NoOptDefVal is the shared fleetAuto sentinel (declared in projectsync.go):
+// a bare -f (no value) carries it, meaning "the configured fleet"; an explicit value
+// (-f navy / -f n1,n2) overrides it with a named fleet or an ad-hoc node list.
+
+// scopeTargets picks the collate fan-out for a -f/-e pair. -e/--all-systems wins (widest);
+// otherwise the -f value selects the fleet scope: the sentinel/empty = the configured fleet,
+// a value = a named fleet or an ad-hoc comma-list of nodes. Errors if a listed node is unknown.
+func scopeTargets(fleetArg string, all bool) ([]queueTarget, string, error) {
 	if all {
-		return allSystemsScope(), "all"
+		return allSystemsScope(), "all", nil
 	}
-	return fleetScope(), "fleet"
+	targets, err := fleetArgScope(fleetArg)
+	return targets, "fleet", err
+}
+
+// fleetArgScope resolves the -f value into collate targets: the sentinel/empty (bare -f)
+// falls to the configured `fleet` list; a value is looked up as a named fleet FIRST (so a
+// name that is both a fleet and a node resolves to the fleet), else split as an ad-hoc
+// comma-list of node names.
+func fleetArgScope(arg string) ([]queueTarget, error) {
+	if arg == "" || arg == fleetAuto {
+		return fleetScope(), nil
+	}
+	if nodes := namedFleetNodes(arg); len(nodes) > 0 {
+		return fleetTargets(nodes), nil
+	}
+	nodes, err := parseFleetNodes(arg)
+	if err != nil {
+		return nil, err
+	}
+	return fleetTargets(nodes), nil
+}
+
+// namedFleetNodes resolves a config-declared named fleet to its node list. Named fleets
+// are not a config schema yet, so this is the resolution seam — it returns nil today, which
+// makes `-f <name>` fall through to the ad-hoc node-list path. FUTURE: back it with a
+// `[fleet.<name>]` block so `-f navy` picks up a saved subset with zero change here.
+func namedFleetNodes(_ string) []string { return nil }
+
+// parseFleetNodes splits an ad-hoc -f node list ("a,b,c") and validates each token is a
+// configured node, so a typo fails loud up front instead of surfacing as a per-target "no
+// scheduler configured" warning after the fan-out.
+func parseFleetNodes(arg string) ([]string, error) {
+	known := make(map[string]bool)
+	for _, n := range config.NodeNames() {
+		known[n] = true
+	}
+	var nodes []string
+	for _, tok := range strings.Split(arg, ",") {
+		if tok = strings.TrimSpace(tok); tok == "" {
+			continue
+		}
+		if !known[tok] {
+			return nil, usageErr("unknown node %q in --fleet — not a configured node (see `mu hpc nodes`)", tok)
+		}
+		nodes = append(nodes, tok)
+	}
+	if len(nodes) == 0 {
+		return nil, usageErr("--fleet needs a node list, e.g. -f node1,node2")
+	}
+	return nodes, nil
 }
 
 // siteScopeHelp carries a verb's own wording for the four WHERE flags — the
@@ -124,10 +179,14 @@ type siteScopeHelp struct {
 // addSiteScopeFlags registers the WHERE flags the site show-verbs share
 // (-N/--node, -l/--local, -f/--fleet, -e/--all-systems), their mutual
 // exclusion, and --node completion. The queue-verb analog is addQueueScopeFlags.
-func addSiteScopeFlags(c *cobra.Command, node *string, local, fleet, all *bool, help siteScopeHelp) {
+// -f is a value flag (bare -f = the configured fleet via the fleetAuto sentinel; an
+// explicit -f navy / -f n1,n2 narrows to a named fleet or an ad-hoc node list); it stays
+// distinguishable from "not given" by the empty string.
+func addSiteScopeFlags(c *cobra.Command, node *string, local *bool, fleet *string, all *bool, help siteScopeHelp) {
 	c.Flags().StringVarP(node, "node", "N", "", help.node)
 	c.Flags().BoolVarP(local, "local", "l", false, help.local)
-	c.Flags().BoolVarP(fleet, "fleet", "f", false, help.fleet)
+	c.Flags().StringVarP(fleet, "fleet", "f", "", help.fleet)
+	c.Flags().Lookup("fleet").NoOptDefVal = fleetAuto
 	c.Flags().BoolVarP(all, "all-systems", "e", false, help.all)
 	c.MarkFlagsMutuallyExclusive("node", "local", "fleet", "all-systems")
 	completeNodeFlag(c)

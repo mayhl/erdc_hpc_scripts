@@ -30,7 +30,8 @@ const showQueuesCmd = "show_queues"
 // stdin is parsed.
 func hpcQueuesCmd() *cobra.Command {
 	var node string
-	var local, jsonOut, all, interactive, fleet, allSystems bool
+	var local, jsonOut, all, interactive, allSystems bool
+	var fleet string
 	c := &cobra.Command{
 		Use:   "queues",
 		Short: "Show a cluster's batch queues (show_queues) as a house table.",
@@ -59,11 +60,15 @@ func hpcQueuesCmd() *cobra.Command {
 				err   error
 			)
 			switch {
-			case fleet, allSystems:
-				var down []string
-				label, qs, down, err = collateQueues(scopeTargets(allSystems))
-				for _, d := range down {
-					render.Warn(d)
+			case fleet != "", allSystems:
+				var targets []queueTarget
+				var scope string
+				if targets, scope, err = scopeTargets(fleet, allSystems); err == nil {
+					var down []string
+					label, qs, down, err = collateQueues(targets, scope)
+					for _, d := range down {
+						render.Warn(d)
+					}
 				}
 			case node != "":
 				label, qs, err = fetchQueues(node)

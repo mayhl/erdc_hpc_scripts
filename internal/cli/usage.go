@@ -26,8 +26,8 @@ const showUsageCmd = "show_usage"
 // passes) and a big positive one late in the year warns of forfeiture (use-it-or-lose-it).
 // Sibling of `mu hpc storage`, same targets.
 func hpcUsageCmd() *cobra.Command {
-	var node string
-	var local, fleet, all, raw, jsonOut bool
+	var node, fleet string
+	var local, all, raw, jsonOut bool
 	c := &cobra.Command{
 		Use:   "usage",
 		Short: "Show allocation usage (show_usage) with a fiscal-year pace column.",
@@ -47,8 +47,11 @@ func hpcUsageCmd() *cobra.Command {
 			"    hpc1 show_usage | mu hpc usage",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if fleet || all {
-				targets, scope := scopeTargets(all)
+			if fleet != "" || all {
+				targets, scope, err := scopeTargets(fleet, all)
+				if err != nil {
+					return err
+				}
 				label, infos, down, err := collateSite(targets, scope, showUsageCmd, parseUsageWithFY,
 					func(r *queue.UsageInfo, lbl string) { r.System = lbl })
 				if err != nil {

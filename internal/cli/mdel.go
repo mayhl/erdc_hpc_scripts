@@ -116,11 +116,14 @@ func mstatInteractive(node string, who userSel) error {
 // cancel route through the pick's own cluster, whose scheduler dialect can differ.
 // The refresh re-collates WITHOUT the spinner (the TUI owns the screen) on a slow
 // tick — a full fan-out per tick is the price of a live fleet view.
-func mstatInteractiveCollate(all bool, who userSel) error {
+func mstatInteractiveCollate(fleetArg string, all bool, who userSel) error {
 	if !render.Interactive() {
 		return fmt.Errorf("mstat -i needs a terminal (stdin is not a tty)")
 	}
-	targets, scope := scopeTargets(all)
+	targets, scope, err := scopeTargets(fleetArg, all)
+	if err != nil {
+		return err
+	}
 	if len(targets) == 0 {
 		if scope == "fleet" {
 			return usageErr("nothing in the fleet — set a `fleet = [...]` node list or `active = true` on a cluster, or use --all-systems")
