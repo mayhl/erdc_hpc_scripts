@@ -24,6 +24,27 @@ func TestStaleNames(t *testing.T) {
 	}
 }
 
+// mountKind splits active fuse mounts three ways: a registered dir is "known" (by name),
+// an unregistered dir UNDER mu's mounts root is "stale" (a mu mount whose registry entry
+// is gone), and anything else is "foreign" (mounted outside mu, never to be touched).
+func TestMountKind(t *testing.T) {
+	root := "/home/u/hpc_sshfs/mounts"
+	reg := map[string]string{root + "/scratch": "scratch"}
+	cases := []struct {
+		dir, wantKind, wantName string
+	}{
+		{root + "/scratch", "known", "scratch"}, // registered
+		{root + "/oldrun", "stale", "oldrun"},   // under root, unregistered
+		{"/Volumes/usb", "foreign", ""},         // mounted outside mu
+		{root + "-sibling/x", "foreign", ""},    // prefix look-alike must NOT count as under root
+	}
+	for _, c := range cases {
+		if k, n := mountKind(c.dir, reg, root); k != c.wantKind || n != c.wantName {
+			t.Errorf("mountKind(%q) = (%q,%q), want (%q,%q)", c.dir, k, n, c.wantKind, c.wantName)
+		}
+	}
+}
+
 // The scanner must catch a fatal sshfs line even when it arrives split across writes,
 // and hand back just that line (trimmed), so runMount can fail fast and show it.
 func TestStderrScannerFatalLine(t *testing.T) {

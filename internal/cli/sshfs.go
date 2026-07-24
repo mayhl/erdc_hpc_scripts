@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -21,7 +22,7 @@ func sshfsCmd() *cobra.Command {
 			"paths behave like local files. Local-only. The h* shell shortcuts below are the\n" +
 			"day-to-day front-doors (not 1:1 with the subcommands).",
 	}
-	c.AddCommand(sshfsListCmd(), sshfsMountCmd(), sshfsUmountCmd(), sshfsPathCmd(), sshfsAddCmd(), sshfsSetCmd(), sshfsRmCmd(), sshfsGroupCmd(false), sshfsGroupCmd(true))
+	c.AddCommand(sshfsListCmd(), sshfsMountCmd(), sshfsUmountCmd(), sshfsPathCmd(), sshfsAddCmd(), sshfsSetCmd(), sshfsRmCmd(), sshfsGroupCmd(false), sshfsGroupCmd(true), sshfsDoctorCmd())
 	setHelpShortcuts(
 		c,
 		[2]string{"hcd <name>", "mount if needed + cd into it (mu sshfs mount)"},
@@ -585,4 +586,118 @@ func sshfsRmCmd() *cobra.Command {
 	}
 	setHelpArgs(c, [2]string{"<name>", "registered mount to remove (see mu sshfs list)"})
 	return c
+}
+
+func sshfsDoctorCmd() *cobra.Command {
+	var fix, yes bool
+	c := &cobra.Command{
+		Use:   "doctor",
+		Short: "Scan every fuse mount for hung endpoints and orphans (not just the registry).",
+		Long: "Inspect ALL fuse/sshfs mounts on this machine — the registry's and any others —\n" +
+			"and flag the ones needing attention: a registered mount whose endpoint died\n" +
+			"(hung), and a stale mu mount still mounted after its registry entry was removed.\n" +
+			"Foreign fuse mounts (mounted outside mu) are reported but never touched. --fix\n" +
+			"unmounts the hung + stale ones. The remount side is `hmt --stale`.",
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return codeErr(runSshfsDoctor(fix, yes))
+		},
+	}
+	c.Flags().BoolVar(&fix, "fix", false, "unmount the hung + stale (unregistered mu) mounts it finds")
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "with --fix, skip the confirmation prompt")
+	return c
+}
+
+// mountKind classifies an active fuse mount by its dir: "known"+name for a registered
+// mount dir, "stale" for a dir under mu's mounts root with no registry entry (a mu mount
+// left after its registry entry was removed), else "foreign" (mounted outside mu). Pure —
+// the doctor's testable core; the liveness probe is layered on in runSshfsDoctor.
+func mountKind(dir string, regByDir map[string]string, mountsRoot string) (kind, name string) {
+	if n, ok := regByDir[dir]; ok {
+		return "known", n
+	}
+	if dir == mountsRoot || strings.HasPrefix(dir, mountsRoot+string(filepath.Separator)) {
+		return "stale", filepath.Base(dir)
+	}
+	return "foreign", ""
+}
+
+// runSshfsDoctor scans every fuse-like mount, probes each for liveness, and reports the
+// healthy/hung/stale/foreign split. --fix unmounts the hung + stale ones (mu's own dead
+// mounts), never a foreign mount. Returns non-zero when a problem is found and left
+// unfixed, so it doubles as a scriptable health check.
+func runSshfsDoctor(fix, yes bool) int {
+	reg := sshfs.ReadRegistry()
+	regByDir := make(map[string]string, len(reg))
+	for name := range reg {
+		regByDir[sshfs.MountDir(name)] = name
+	}
+	mountsRoot := sshfs.MountsRoot()
+
+	type problem struct{ dir, label string }
+	var scanned, healthy int
+	var problems []problem // hung + stale — the --fix targets
+
+	for _, a := range sshfs.ActiveMounts() {
+		if !a.FuseLike() {
+			continue
+		}
+		scanned++
+		kind, name := mountKind(a.Dir, regByDir, mountsRoot)
+		live := sshfs.Responds(a.Dir)
+		switch {
+		case kind == "known" && live:
+			healthy++
+			render.Detail(fmt.Sprintf("● %-16s %s", name, a.Dir))
+		case kind == "known":
+			problems = append(problems, problem{a.Dir, name})
+			render.Err(fmt.Sprintf("%s: hung — endpoint gone (%s)", name, a.Dir))
+		case kind == "stale":
+			problems = append(problems, problem{a.Dir, name})
+			render.Warn(fmt.Sprintf("%s: stale — mounted but no longer in the registry (%s)", name, a.Dir))
+		default: // foreign
+			state := "ok"
+			if !live {
+				state = "hung"
+			}
+			render.Info(fmt.Sprintf("○ foreign %s mount (%s) — %s, left alone", a.Type, a.Dir, state))
+		}
+	}
+
+	if scanned == 0 {
+		render.Info("no fuse mounts active")
+		return 0
+	}
+	render.Info(fmt.Sprintf("scanned %d fuse mount(s): %d healthy, %d need attention", scanned, healthy, len(problems)))
+	if len(problems) == 0 {
+		return 0
+	}
+	if !fix {
+		render.Info("`mu sshfs doctor --fix` unmounts the hung/stale ones")
+		return 1
+	}
+
+	// --fix: unmount the hung + stale mounts (never a foreign one).
+	if !yes {
+		for _, p := range problems {
+			render.Detail("  will unmount " + p.dir)
+		}
+		if !confirm("unmount %d hung/stale mount(s)?", len(problems)) {
+			render.Info("aborted")
+			return 1
+		}
+	}
+	failed := 0
+	for _, p := range problems {
+		if sshfs.Umount(p.dir) {
+			render.OK("unmounted " + p.label)
+		} else {
+			render.Err(fmt.Sprintf("%s: couldn't unmount (hung?); try `diskutil unmount force %s`", p.label, p.dir))
+			failed++
+		}
+	}
+	if failed > 0 {
+		return 1
+	}
+	return 0
 }
