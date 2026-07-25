@@ -99,7 +99,7 @@ func Root() *cobra.Command {
 	root.PersistentFlags().Lookup("verbose").NoOptDefVal = "true"
 	root.PersistentFlags().Lookup("quiet").NoOptDefVal = "true"
 	root.MarkFlagsMutuallyExclusive("verbose", "quiet")
-	root.AddCommand(cpCmd(), tarCmd(), hpcCmd(), setupCmd(), logCmd(), doctorCmd(), psCmd(), jobCmd(), pathCmd(), configCmd(), wrapCmd())
+	root.AddCommand(cpCmd(), tarCmd(), hpcCmd(), setupCmd(), logCmd(), doctorCmd(), psCmd(), jobCmd(), pathCmd(), configCmd(), wrapCmd(), castCmd())
 	// sshfs mounts a remote dir onto the LOCAL workstation via fuse — inapplicable on an
 	// HPC login node (already on the box, no fuse-t), so register it local-only. Mirrors
 	// the shell seam, where the hcd/hmt front-doors live in platform/local.sh.

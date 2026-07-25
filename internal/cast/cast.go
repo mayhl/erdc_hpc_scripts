@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 )
 
@@ -50,7 +51,9 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 }
 
 func (e Event) MarshalJSON() ([]byte, error) {
-	iv, err := json.Marshal(e.Interval)
+	// round to microseconds (asciinema's own resolution) so accumulated deltas don't render
+	// as 6.300000000000001; json.Marshal then emits the shortest form (6.3, or 2 for 2.0).
+	iv, err := json.Marshal(math.Round(e.Interval*1e6) / 1e6)
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +98,17 @@ func (c *Cast) Write(w io.Writer) error {
 		bw.WriteByte('\n')
 	}
 	return bw.Flush()
+}
+
+// Version reports the asciicast version from the header (2 or 3; 0 if unparseable). The timing
+// ops here assume v3 delta semantics, so callers should reject a non-3 cast rather than silently
+// mangle an absolute-time v2 recording.
+func (c *Cast) Version() int {
+	var h struct {
+		Version int `json:"version"`
+	}
+	json.Unmarshal(c.Header, &h)
+	return h.Version
 }
 
 // Duration is the wall-clock length (sum of gaps).
