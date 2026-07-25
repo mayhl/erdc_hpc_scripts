@@ -1,0 +1,16 @@
+# mise — terminal-demo recording toolchain. OPT-IN: active only when MISE_ENV
+# contains `cast` (add `cast` to MU_MODULES). Available on BOTH the laptop and the
+# HPC clusters (record HPC-specific tutorials on the login node — capture is an
+# interactive shell session, not compute/cron), so it layers on base + hpc. The
+# pipx tool gets its own isolated venv from the backend, which is why the design's
+# hand-rolled ~/.pyvenvs/cast is unneeded. Feeds `mu cast`. See ARCHITECTURE.md
+# "Recording".
+
+[tools]
+# recorder — asciicast v3 (static aqua binary; matches a laptop's system asciinema)
+"aqua:asciinema/asciinema" = "3"
+# workflow-1 driver — types #$-annotated scripts into a recording (own pipx venv)
+"pipx:asciinema-automation" = "latest"
+# renderer — cleaned cast → svg (node backend from conf.d/toolchains.toml). Unused
+# on HPC if you capture there and `mu cast build` on the laptop; harmless.
+"npm:svg-term-cli" = "latest"

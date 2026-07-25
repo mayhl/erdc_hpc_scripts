@@ -308,6 +308,7 @@ func miseEnv() string {
   export MISE_ENV="${MISE_ENV:+$MISE_ENV,}hpc"
 fi
 case " $(printf '%s' "${MU_MODULES:-}" | tr ',' ' ') " in *" fmt "*) export MISE_ENV="${MISE_ENV:+$MISE_ENV,}fmt" ;; esac
+case " $(printf '%s' "${MU_MODULES:-}" | tr ',' ' ') " in *" cast "*) export MISE_ENV="${MISE_ENV:+$MISE_ENV,}cast" ;; esac
 `
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mayhl/mayhl_utils/internal/modules"
 	"github.com/mayhl/mayhl_utils/internal/render"
 	"github.com/mayhl/mayhl_utils/internal/setup"
 )
@@ -74,7 +75,7 @@ type toolchain struct {
 func (t *toolchain) linux() error {
 	mise, present := misePath()
 	cfgDir := miseConfigDir()
-	env := miseEnv(fmtOptedIn())
+	env := miseEnv()
 	render.Info("toolchain plan (linux):")
 	if present {
 		render.Detail("  mise: " + mise)
@@ -87,7 +88,7 @@ func (t *toolchain) linux() error {
 		render.Detail("  modulefile: " + t.modulefilePath() + " — one prepend-path per tool bin dir")
 	} else {
 		render.Detail("  config: " + cfgDir + " (emitted from the embedded tiers)")
-		render.Detail("  tiers: MISE_ENV=" + env + " (base always; hpc; fmt via MU_MODULES)")
+		render.Detail("  tiers: MISE_ENV=" + env + " (base always; hpc; fmt/cast via MU_MODULES)")
 	}
 	if t.dryRun {
 		render.OK("dry-run — nothing installed")
@@ -153,23 +154,21 @@ func stageMiseConfigs(dir string) error {
 	return nil
 }
 
-// fmtOptedIn reports whether MU_MODULES includes the fmt module (space- or comma-list).
-func fmtOptedIn() bool {
-	for _, m := range strings.FieldsFunc(os.Getenv("MU_MODULES"), func(r rune) bool { return r == ' ' || r == ',' }) {
-		if m == "fmt" {
-			return true
-		}
-	}
-	return false
-}
+// tierModules are MU_MODULES entries that each map to a same-named mise tier
+// (config.<m>.toml): personal, opt-in tool sets layered on base + hpc. fmt = formatters/lint;
+// cast = the recording toolchain. Keep in sync with the shellinit runtime MISE_ENV composition.
+var tierModules = []string{"fmt", "cast"}
 
 // miseEnv composes MISE_ENV for the install: hpc always (the nvim/CLI stack this command
-// installs; base + conf.d are unconditional), plus fmt when opted in via MU_MODULES.
-func miseEnv(withFmt bool) string {
-	if withFmt {
-		return "hpc,fmt"
+// installs; base + conf.d are unconditional), plus each opted-in tier module from MU_MODULES.
+func miseEnv() string {
+	env := "hpc"
+	for _, m := range tierModules {
+		if modules.Enabled(m) {
+			env += "," + m
+		}
 	}
-	return "hpc"
+	return env
 }
 
 // deployModule installs the shared HPC runtime into --prefix and writes the Tcl

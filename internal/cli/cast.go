@@ -132,13 +132,18 @@ func writeCast(path string, c *cast.Cast) error {
 	return c.Write(f)
 }
 
-// renderSVG pipes the cleaned v2 cast through svg-term-cli (via npx). svg-term reads asciicast
-// v2 only — that is why ToV2 runs first. A missing npx is a SOFT failure: the cleaned cast still
-// stands, so you can render later or with --no-svg on the next run.
+// renderSVG pipes the cleaned v2 cast through svg-term (svg-term reads asciicast v2 only — that
+// is why ToV2 runs first). It prefers the declared `svg-term` binary from the `cast` mise tier;
+// absent that, it falls back to `npx svg-term-cli` (no install needed). Missing both is a SOFT
+// failure: the cleaned cast still stands, so you can render later or pass --no-svg.
 func renderSVG(v2Path, svgPath string) error {
-	npx, err := exec.LookPath("npx")
-	if err != nil {
-		render.Warn("npx not found — kept the cleaned cast, skipped the svg (install node, or pass --no-svg)")
+	var cmd *exec.Cmd
+	if bin, err := exec.LookPath("svg-term"); err == nil {
+		cmd = exec.Command(bin, "--out", svgPath, "--window")
+	} else if npx, err := exec.LookPath("npx"); err == nil {
+		cmd = exec.Command(npx, "svg-term-cli", "--out", svgPath, "--window")
+	} else {
+		render.Warn("svg-term not found — kept the cleaned cast, skipped the svg (add `cast` to MU_MODULES + `mu setup toolchain`, or pass --no-svg)")
 		return nil
 	}
 	in, err := os.Open(v2Path)
@@ -146,7 +151,6 @@ func renderSVG(v2Path, svgPath string) error {
 		return err
 	}
 	defer in.Close()
-	cmd := exec.Command(npx, "svg-term-cli", "--out", svgPath, "--window")
 	cmd.Stdin = in
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
