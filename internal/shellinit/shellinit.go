@@ -231,6 +231,11 @@ func frontDoors() string {
 	// Project plane (project module): swap cds into a mirror (the one door that must be shell —
 	// capture-then-cd so a failed resolve leaves the shell put); mruns lists runs; archive
 	// shadows the site PST/TUSC binary (mu resolves the real one from PATH, so no recursion).
+	// Recording plane (cast module): mcast is the thin door — `mu cast` dispatches capture by
+	// the arg's suffix (.sh → auto-typed, bare → live) and carries the build/svg subcommands.
+	if modules.Enabled("cast") {
+		doors = append(doors, door{"mcast", `mu cast "$@"`})
+	}
 	if modules.Enabled("project") {
 		doors = append(doors, door{"swap", `local d; d=$(mu path swap "$@") && cd "$d"`})
 		if _, err := exec.LookPath("archive"); err == nil {

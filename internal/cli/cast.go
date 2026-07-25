@@ -23,14 +23,75 @@ const (
 
 func castCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "cast",
-		Short: "Build terminal-demo recordings (asciicast → svg).",
-		Long: "Turn asciinema recordings into shareable svgs. `build` runs the fixed post-\n" +
-			"processing pipeline (crop → idle-limit → concat → svg) on one or more raw casts.\n" +
-			"Capture (auto/live) lands later; for now record with asciinema, then `mu cast build`.",
+		Use:   "cast [<script.sh> | <name>]",
+		Short: "Record and build terminal-demo recordings (asciicast → svg).",
+		Long: "Capture a terminal demo and post-process it into a shareable svg. The argument's\n" +
+			"suffix picks the capture mode: a '.sh' script is auto-typed by asciinema-automation\n" +
+			"(workflow 1), a bare <name> starts a live `asciinema rec` you drive by hand (workflow\n" +
+			"2). Both write <name>.cast; then `mu cast build <name>` cleans and renders it. Bound\n" +
+			"the real content by echoing START_RECORDING / STOP_RECORDING.",
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch {
+			case len(args) == 0:
+				return cmd.Help()
+			case strings.HasSuffix(args[0], ".sh"):
+				return runCastAuto(args[0]) // workflow 1: scripted
+			default:
+				return runCastLive(args[0]) // workflow 2: live
+			}
+		},
 	}
 	c.AddCommand(castBuildCmd())
 	return c
+}
+
+// recordExec runs an interactive recorder (asciinema / asciinema-automation) with _RECORD_FLAG
+// set so the shell it spawns applies the clean record profile (p10k theme, no ambient plugins),
+// inheriting the terminal so you see and drive the session.
+func recordExec(bin string, args ...string) error {
+	cmd := exec.Command(bin, args...)
+	cmd.Env = append(os.Environ(), "_RECORD_FLAG=1")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+// runCastLive starts a live `asciinema rec` you type into (workflow 2). The raw cast is named
+// from the bare argument; build it afterward with `mu cast build <name>`.
+func runCastLive(name string) error {
+	asc, err := exec.LookPath("asciinema")
+	if err != nil {
+		return fmt.Errorf("asciinema not found — add `cast` to MU_MODULES and run `mu setup toolchain`")
+	}
+	out := name
+	if !strings.HasSuffix(out, ".cast") {
+		out += ".cast"
+	}
+	render.Info("live recording → " + out + " (echo START_RECORDING / STOP_RECORDING to bound it; exit the shell to stop)")
+	if err := recordExec(asc, "rec", out); err != nil {
+		return err
+	}
+	render.OK("recorded " + out + " — render with `mu cast build " + strings.TrimSuffix(out, ".cast") + "`")
+	return nil
+}
+
+// runCastAuto records a '.sh' script by auto-typing it with asciinema-automation (workflow 1).
+// The '#$'-directives (`#$ wait`, etc.) in the script pace the typing.
+func runCastAuto(script string) error {
+	if _, err := os.Stat(script); err != nil {
+		return fmt.Errorf("no script %s", script)
+	}
+	auto, err := exec.LookPath("asciinema-automation")
+	if err != nil {
+		return fmt.Errorf("asciinema-automation not found — add `cast` to MU_MODULES and run `mu setup toolchain`")
+	}
+	out := strings.TrimSuffix(filepath.Base(script), ".sh") + ".cast"
+	render.Info("auto-recording " + script + " → " + out + " (asciinema-automation)")
+	if err := recordExec(auto, script, out); err != nil {
+		return err
+	}
+	render.OK("recorded " + out + " — render with `mu cast build " + strings.TrimSuffix(out, ".cast") + "`")
+	return nil
 }
 
 type castBuildOpts struct {

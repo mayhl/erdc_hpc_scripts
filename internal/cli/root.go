@@ -99,7 +99,7 @@ func Root() *cobra.Command {
 	root.PersistentFlags().Lookup("verbose").NoOptDefVal = "true"
 	root.PersistentFlags().Lookup("quiet").NoOptDefVal = "true"
 	root.MarkFlagsMutuallyExclusive("verbose", "quiet")
-	root.AddCommand(cpCmd(), tarCmd(), hpcCmd(), setupCmd(), logCmd(), doctorCmd(), psCmd(), jobCmd(), pathCmd(), configCmd(), wrapCmd(), castCmd())
+	root.AddCommand(cpCmd(), tarCmd(), hpcCmd(), setupCmd(), logCmd(), doctorCmd(), psCmd(), jobCmd(), pathCmd(), configCmd(), wrapCmd())
 	// sshfs mounts a remote dir onto the LOCAL workstation via fuse — inapplicable on an
 	// HPC login node (already on the box, no fuse-t), so register it local-only. Mirrors
 	// the shell seam, where the hcd/hmt front-doors live in platform/local.sh.
@@ -113,6 +113,11 @@ func Root() *cobra.Command {
 	}
 	if modules.Enabled("project") {
 		root.AddCommand(projectCmd(), archiveCmd())
+	}
+	// Recording (asciinema → svg); opt-in with its mise tier (MU_MODULES∋cast). Both machines
+	// — HPC-specific tutorials record on the login node (capture is an interactive shell).
+	if modules.Enabled("cast") {
+		root.AddCommand(castCmd())
 	}
 	// shell-init and completion moved under `setup`; keep them reachable at the root
 	// as HIDDEN aliases so existing rc lines (`eval "$(mu shell-init)"`, `mu completion
