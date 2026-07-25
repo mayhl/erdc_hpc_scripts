@@ -13,6 +13,7 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,38 +123,90 @@ func splitLines(s string) []string {
 	return strings.Split(s, "\n")
 }
 
-// completeRemotePath is the shared cobra completer for a remote-path arg on a node: cache
-// read (instant), else one non-blocking master-only probe (never prompts, never hangs),
-// then filter. dirsOnly restricts to directories (sshfs mount targets); cp wants files too.
-func completeRemotePath(node, toComplete string, dirsOnly bool) ([]string, cobra.ShellCompDirective) {
-	none := cobra.ShellCompDirectiveNoFileComp
-	dir, prefix, ok := splitRemotePath(toComplete)
-	if !ok || !rpathSafe(dir) {
-		return nil, none
+// remoteListing returns the raw `ls -1Ap` lines for dir on node: cache read (instant), else
+// ONE master-only probe (never prompts, never hangs — hpc.RemoteProbe), then cache-write.
+// ok=false on a cold host / no master. Shared by the cobra completer and the __rpath helper.
+func remoteListing(node, dir string) (lines []string, ok bool) {
+	if !rpathSafe(dir) {
+		return nil, false
 	}
 	target, err := hpc.Resolve(node)
 	if err != nil {
-		return nil, none
+		return nil, false
 	}
 	cache := rpathCachePath(node, dir)
-	lines, hit := readRpathCache(cache)
-	if !hit {
-		// A dir with ~ or $ needs a login shell to expand (bash -lc so ~ and $WORKDIR
-		// resolve; dir is rpathSafe so the unquoted expansion can't inject). A plain path
-		// runs a bare ls instead — same result, minus the ~1.4s login-profile sourcing that
-		// alone pushed the round-trip past the probe deadline.
-		remoteCmd := "ls -1Ap -- " + dir // dir is rpathSafe (no spaces/globs) — no quoting needed
-		if strings.ContainsAny(dir, "~$") {
-			remoteCmd = "bash -lc " + shell.Quote("ls -1Ap -- "+dir)
-		}
-		out, probeOK := hpc.RemoteProbe(target, remoteCmd)
-		if !probeOK {
-			return nil, none // cold host / no master — no completion, no hang
-		}
-		lines = splitLines(out)
-		writeRpathCache(cache, lines)
+	if lines, hit := readRpathCache(cache); hit {
+		return lines, true
+	}
+	// A dir with ~ or $ needs a login shell to expand (bash -lc so ~ and $WORKDIR resolve;
+	// dir is rpathSafe so the unquoted expansion can't inject). A plain path runs a bare ls
+	// instead — same result, minus the ~1.4s login-profile sourcing that alone pushed the
+	// round-trip past the probe deadline.
+	remoteCmd := "ls -1Ap -- " + dir // dir is rpathSafe (no spaces/globs) — no quoting needed
+	if strings.ContainsAny(dir, "~$") {
+		remoteCmd = "bash -lc " + shell.Quote("ls -1Ap -- "+dir)
+	}
+	out, probeOK := hpc.RemoteProbe(target, remoteCmd)
+	if !probeOK {
+		return nil, false // cold host / no master — no completion, no hang
+	}
+	lines = splitLines(out)
+	writeRpathCache(cache, lines)
+	return lines, true
+}
+
+// completeRemotePath is the shared cobra completer for a remote-path arg on a node. It renders
+// full paths (cobra's _describe inserts the whole value); the zsh _mu_rpath completer overrides
+// these args with grouped basenames, so this is the fallback when that override doesn't engage.
+// dirsOnly restricts to directories (sshfs mount targets); cp wants files too.
+func completeRemotePath(node, toComplete string, dirsOnly bool) ([]string, cobra.ShellCompDirective) {
+	none := cobra.ShellCompDirectiveNoFileComp
+	dir, prefix, ok := splitRemotePath(toComplete)
+	if !ok {
+		return nil, none
+	}
+	lines, ok := remoteListing(node, dir)
+	if !ok {
+		return nil, none
 	}
 	comps := filterRemoteEntries(lines, dir, prefix, dirsOnly)
 	// A directory completion ends in / — no trailing space, so a second TAB descends.
 	return comps, none | cobra.ShellCompDirectiveNoSpace
+}
+
+// rpathCompleteCmd is `mu __rpath <node> <dirsOnly:0|1> <path>` — the DATA source for the zsh
+// remote-path completer (_mu_rpath). It prints one BASENAME per line (directories keep their
+// trailing /), already prefix- and dirsOnly-filtered, so zsh can compadd -p them as grouped
+// basenames. Hidden (nobody types it); silent on a cold host, same as the cobra path.
+func rpathCompleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "__rpath <node> <0|1> <path>",
+		Hidden: true,
+		Args:   cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir, prefix, ok := splitRemotePath(args[2])
+			if !ok {
+				return nil
+			}
+			lines, ok := remoteListing(args[0], dir)
+			if !ok {
+				return nil
+			}
+			dirsOnly := args[1] == "1"
+			w := cmd.OutOrStdout()
+			for _, e := range lines {
+				if e == "" || e == "./" || e == "../" {
+					continue
+				}
+				if dirsOnly && !strings.HasSuffix(e, "/") {
+					continue
+				}
+				if !strings.HasPrefix(e, prefix) {
+					continue
+				}
+				fmt.Fprintln(w, e)
+			}
+			return nil
+		},
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -75,10 +76,98 @@ func writeCompletion(root *cobra.Command, shell string, w io.Writer) error {
 	case "bash":
 		return root.GenBashCompletionV2(w, true)
 	case "zsh":
-		return root.GenZshCompletion(w)
+		if err := root.GenZshCompletion(w); err != nil {
+			return err
+		}
+		_, err := io.WriteString(w, zshCompletionExtras())
+		return err
 	case "fish":
 		return root.GenFishCompletion(w, true)
 	default:
 		return fmt.Errorf("unsupported shell %q (want bash, zsh, or fish)", shell)
 	}
 }
+
+// zshCompletionExtras is the hand-written zsh completion appended to cobra's generated script.
+// Cobra's _describe shows AND inserts the full completion value, so a remote-path arg lists as
+// clutter of full paths; here we override those args with grouped BASENAMES via compadd -p —
+// the same data (mu __rpath, riding the cached master-only probe), styled by zsh like omz's
+// file completion. It wires the completer onto the `<node> <verb>` front-doors (_mu_node) and
+// layers it over cobra's _mu for `mu cp`/`sshfs`. Door names and verbs are interpolated from
+// the same source as the shell integration (shellinit), so the completion can never drift.
+func zshCompletionExtras() string {
+	compdef := ""
+	if nodes := shellinit.NodeDoorNames(); len(nodes) > 0 {
+		compdef = "compdef _mu_node " + strings.Join(nodes, " ")
+	}
+	return strings.NewReplacer(
+		"__VERBS__", strings.Join(shellinit.NodeVerbs(), " "),
+		"__NODES_COMPDEF__", compdef,
+	).Replace(zshExtrasBody)
+}
+
+// zshExtrasBody carries no backticks (Go raw string) and no % printf traps — placeholders are
+// swapped by zshCompletionExtras. Classic zsh syntax throughout so a parse edge can't bite.
+const zshExtrasBody = `
+# ── mu remote-path completion (basename display, grouped like omz) ───────────────────────────
+# _mu_rpath <node> <dirsOnly 0|1> — complete a remote path on <node> as grouped basenames. Data
+# comes from 'mu __rpath', which rides the cached, master-only probe (no master → no completion,
+# never a hang). compset -P '*/' keeps the already-typed dir off the line so we match basenames.
+_mu_rpath() {
+  emulate -L zsh
+  local node=$1 dirsonly=$2 cur=$PREFIX
+  [[ $cur == (/|'~'|'$')* && $cur == */* ]] || return 1   # only anchored paths past a slash
+  local dir=${cur%/*}/
+  local -a entries
+  entries=(${(f)"$(mu __rpath $node $dirsonly -- $dir 2>/dev/null)"})
+  (( $#entries )) || return 1
+  local -a dirs files
+  local e
+  for e in $entries; do
+    if [[ $e == */ ]]; then dirs+=($e); else files+=($e); fi
+  done
+  compset -P '*/'
+  local expl
+  if (( $#dirs )); then
+    _description -V mu-remote-dirs expl 'remote directory'
+    compadd "$expl[@]" -S '' -- $dirs    # trailing / lives in the value; no space, so TAB descends
+  fi
+  if (( $#files )); then
+    _description -V mu-remote-files expl 'remote file'
+    compadd "$expl[@]" -- $files
+  fi
+  return 0
+}
+
+# _mu_node — completion for the '<node> <verb> …' front-doors (wheat, mike, …): the verb first,
+# then remote paths on pull (source) and push (destination). Local args use plain file completion.
+_mu_node() {
+  emulate -L zsh
+  local node=$words[1]
+  if (( CURRENT == 2 )); then
+    local -a verbs; verbs=(__VERBS__)
+    _describe -t mu-node-verbs 'node verb' verbs
+    return
+  fi
+  case $words[2] in
+    pull) if (( CURRENT == 3 )); then _mu_rpath $node 0; else _files; fi ;;
+    push) if (( CURRENT == 3 )); then _files; else _mu_rpath $node 1; fi ;;
+    *) _default ;;
+  esac
+}
+__NODES_COMPDEF__
+
+# Wrap cobra's _mu so mu's OWN remote-path args render as basenames too. Any shape we don't
+# recognize (flags mixed in, other verbs) falls straight through to cobra's original completer.
+if (( $+functions[_mu] )); then
+  functions[_mu_cobra]=$functions[_mu]
+  _mu() {
+    if [[ $words[2] == cp && $words[3] == (pull|push) ]]; then
+      [[ $words[3] == pull && $CURRENT == 5 ]] && { _mu_rpath $words[4] 0; return }
+      [[ $words[3] == push && $CURRENT == 6 ]] && { _mu_rpath $words[4] 1; return }
+    fi
+    [[ $words[2] == sshfs && $words[3] == add && $CURRENT == 6 ]] && { _mu_rpath $words[5] 1; return }
+    _mu_cobra "$@"
+  }
+fi
+`

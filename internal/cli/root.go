@@ -119,6 +119,7 @@ func Root() *cobra.Command {
 	// zsh`) don't break. Cobra's default completion command stays functional, just
 	// hidden from the root menu.
 	root.AddCommand(hidden(shellInitCmd()))
+	root.AddCommand(hidden(rpathCompleteCmd())) // __rpath: data source for the zsh remote-path completer
 	root.CompletionOptions.HiddenDefaultCmd = true
 	// House help on every subcommand: each direct child gets the house renderer and its
 	// subtree inherits it (Cobra resolves the nearest SetHelpFunc). fang overrides only
