@@ -5,9 +5,10 @@ package cli
 // process per TAB, so there is no in-memory state to carry a listing between tabs — the
 // cache MUST be on disk. And completion must never block or prompt: a slow ssh hangs the
 // shell, and a first-contact ssh can pop a CAC/PIN prompt the TAB can't answer. So a miss
-// fires ONE non-blocking probe (hpc.RemoteProbe) that only succeeds off an already-open
-// ControlMaster; a cold host yields no completion instead of a hang. Any live mount / cp /
-// tunnel keeps a master warm, so in practice completion is live while you are working a node.
+// fires ONE probe (hpc.RemoteProbe) that runs ONLY over an already-open ControlMaster socket
+// (it stats the socket and bails otherwise — never a fresh connect); a cold host yields no
+// completion instead of a hang. Any live mount / cp / tunnel keeps a master warm, so in
+// practice completion is live while you are working a node.
 
 import (
 	"crypto/sha256"
@@ -137,9 +138,15 @@ func completeRemotePath(node, toComplete string, dirsOnly bool) ([]string, cobra
 	cache := rpathCachePath(node, dir)
 	lines, hit := readRpathCache(cache)
 	if !hit {
-		// bash -lc so ~ and $WORKDIR resolve on the login shell; dir is metachar-free
-		// (rpathSafe) so the unquoted expansion can't inject.
-		out, probeOK := hpc.RemoteProbe(target, "bash -lc "+shell.Quote("ls -1Ap -- "+dir))
+		// A dir with ~ or $ needs a login shell to expand (bash -lc so ~ and $WORKDIR
+		// resolve; dir is rpathSafe so the unquoted expansion can't inject). A plain path
+		// runs a bare ls instead — same result, minus the ~1.4s login-profile sourcing that
+		// alone pushed the round-trip past the probe deadline.
+		remoteCmd := "ls -1Ap -- " + dir // dir is rpathSafe (no spaces/globs) — no quoting needed
+		if strings.ContainsAny(dir, "~$") {
+			remoteCmd = "bash -lc " + shell.Quote("ls -1Ap -- "+dir)
+		}
+		out, probeOK := hpc.RemoteProbe(target, remoteCmd)
 		if !probeOK {
 			return nil, none // cold host / no master — no completion, no hang
 		}

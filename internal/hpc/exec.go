@@ -53,10 +53,17 @@ func RemoteExec(target, remoteCmd string) (string, error) {
 
 // RemoteProbe runs remoteCmd on target for completion/autocomplete. It rides an EXISTING
 // ControlMaster socket if one is up (instant, already authenticated) but NEVER creates a
-// master and NEVER prompts (BatchMode + a 1s connect timeout), so a cold host fails fast
-// instead of blocking a TAB or triggering a CAC/PIN prompt. Returns the output and whether
-// it succeeded within the deadline. The transport is MU_SSH, same as RemoteExec.
+// master and NEVER prompts, so a cold host fails fast instead of blocking a TAB or
+// triggering a CAC/PIN prompt. We gate on the socket itself: ControlMaster=no still opens a
+// FRESH connection when the socket is absent (a ~2.6s connect+login round-trip that blows the
+// deadline anyway), so we stat controlPath first and bail if there's no live master — that
+// makes "master-only" real rather than an accident of the timeout. BatchMode+ConnectTimeout
+// stay as belt-and-suspenders against a racing socket teardown. Returns the output and
+// whether it succeeded within the deadline. The transport is MU_SSH, same as RemoteExec.
 func RemoteProbe(target, remoteCmd string) (string, bool) {
+	if _, err := os.Stat(controlPath(target)); err != nil {
+		return "", false // no ambient master → no completion (never a fresh connect)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	args := []string{
