@@ -200,10 +200,53 @@ func Umount(mdir string) bool {
 	return false
 }
 
-// MountArgs builds the sshfs argument vector (after the "sshfs" prog): keepalive
-// ssh transport via MU_SSH, reconnect, defer_permissions, optional read-only.
-func MountArgs(target, rpath, mdir string, ro, verbose bool) []string {
-	sshCmd := config.SSHCommand() + " -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
+// sshShim is the ssh transport wrapper sshfs's ssh_command points at. It gates
+// every ssh — including sshfs's own `-o reconnect` retries — on a live Kerberos
+// ticket: with none (offline, or the CAC not yet unlocked) it exits fast instead
+// of letting ssh reach GSSAPI, which on macOS auto-fires PKINIT and pops a CAC PIN
+// prompt. During a VPN outage those prompts storm and fight the VPN client for the
+// single CAC reader, blocking the very re-auth that would restore the network.
+// `klist -s` is local and read-only — it never itself triggers PKINIT; gated only
+// when klist exists so a non-Kerberos setup still mounts. Keepalive/ConnectTimeout
+// options live here (not in MountArgs) so they apply to the real ssh it exec's;
+// MU_SSH is honored at run time to match the rest of the transport plane.
+const sshShim = `#!/bin/sh
+# managed by mu — regenerated on every mount; do not hand-edit
+if command -v klist >/dev/null 2>&1; then
+	klist -s 2>/dev/null || exit 255
+fi
+exec ${MU_SSH:-ssh} -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "$@"
+`
+
+// SSHShimPath is the on-disk ssh transport shim — state, not cache: a mount's
+// ssh_command points here, so losing it breaks reconnects. One shim, all mounts.
+func SSHShimPath() string {
+	dir := os.Getenv("XDG_STATE_HOME")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(dir, "mayhl_utils", "bin", "mu-sshfs-ssh")
+}
+
+// EnsureSSHShim writes the ssh transport shim (idempotent — overwrites so option
+// changes propagate) and returns its path, ready to hand to MountArgs.
+func EnsureSSHShim() (string, error) {
+	p := SSHShimPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(p, []byte(sshShim), 0o755); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
+// MountArgs builds the sshfs argument vector (after the "sshfs" prog): the ssh
+// transport is the ticket-gated shim (sshCmd, from EnsureSSHShim), plus reconnect,
+// defer_permissions, optional read-only. Verbose appends ssh -v; sshfs word-splits
+// ssh_command, so it rides through as a trailing token.
+func MountArgs(sshCmd, target, rpath, mdir string, ro, verbose bool) []string {
 	if verbose {
 		sshCmd += " -v"
 	}

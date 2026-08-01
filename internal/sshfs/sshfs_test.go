@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mayhl/mayhl_utils/internal/config"
@@ -99,24 +100,48 @@ func TestReadRegistryGroups(t *testing.T) {
 }
 
 func TestMountArgs(t *testing.T) {
-	t.Setenv("MU_SSH", "ossh")
-	got := MountArgs("me@hpc2.example", "/data", "/local/mnt", true, false)
+	const shim = "/state/mayhl_utils/bin/mu-sshfs-ssh"
+	got := MountArgs(shim, "me@hpc2.example", "/data", "/local/mnt", true, false)
 	want := []string{
-		"-o", "ssh_command=ossh -o ServerAliveInterval=15 -o ServerAliveCountMax=3",
+		"-o", "ssh_command=" + shim,
 		"-o", "reconnect", "-o", "defer_permissions", "-o", "ro",
 		"me@hpc2.example:/data", "/local/mnt",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("MountArgs =\n %q\nwant %q", got, want)
 	}
-	// verbose adds ssh -v; rw omits the ro option.
-	v := MountArgs("me@hpc2.example", "/data", "/local/mnt", false, true)
-	if v[1] != "ssh_command=ossh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -v" {
+	// verbose appends ssh -v as a trailing token; rw omits the ro option.
+	v := MountArgs(shim, "me@hpc2.example", "/data", "/local/mnt", false, true)
+	if v[1] != "ssh_command="+shim+" -v" {
 		t.Errorf("verbose ssh_command = %q", v[1])
 	}
 	for _, a := range v {
 		if a == "ro" {
 			t.Errorf("rw mount should not carry -o ro: %q", v)
+		}
+	}
+}
+
+func TestEnsureSSHShim(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	p, err := EnsureSSHShim()
+	if err != nil {
+		t.Fatalf("EnsureSSHShim: %v", err)
+	}
+	if p != SSHShimPath() {
+		t.Errorf("path = %q, want %q", p, SSHShimPath())
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat shim: %v", err)
+	}
+	if fi.Mode().Perm()&0o100 == 0 {
+		t.Errorf("shim not executable: %v", fi.Mode())
+	}
+	body, _ := os.ReadFile(p)
+	for _, want := range []string{"klist -s", "ConnectTimeout=10", "${MU_SSH:-ssh}"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("shim missing %q:\n%s", want, body)
 		}
 	}
 }

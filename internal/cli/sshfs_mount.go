@@ -192,7 +192,12 @@ func runMount(name string, verbose bool, spinLabel string, quiet bool) int {
 		render.Detail("  remote  " + m.Path)
 	}
 
-	cmd := exec.Command("sshfs", sshfs.MountArgs(target, m.Path, mdir, m.RO, verbose)...)
+	shim, err := sshfs.EnsureSSHShim()
+	if err != nil {
+		render.Err(err.Error())
+		return 1
+	}
+	cmd := exec.Command("sshfs", sshfs.MountArgs(shim, target, m.Path, mdir, m.RO, verbose)...)
 	cmd.Stdin, cmd.Stdout = os.Stdin, os.Stdout
 	// Bound the mount so a wedged sshfs can't hang the terminal (the old failure: a bad
 	// remote path left it spinning until ^Z). Non-verbose captures stderr so it can
