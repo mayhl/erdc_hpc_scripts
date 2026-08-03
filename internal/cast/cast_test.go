@@ -67,6 +67,29 @@ func TestCropToMarkers(t *testing.T) {
 	}
 }
 
+// The typed `echo "STOP_RECORDING"`, its prompt, and the ZLE accept all sit between the last
+// real output and the marker match — the stop boundary walks back over them to the previous
+// line-ending output.
+func TestCropDropsTypedStopEcho(t *testing.T) {
+	c := &Cast{Events: []Event{
+		{Interval: 0, Code: "o", Data: "START_RECORDING\r\n"},
+		{Interval: 1, Code: "o", Data: "real output\r\n"},
+		{Interval: 1, Code: "o", Data: "\x1b[0m\x1b[49mprompt ❯ \x1b[K"},       // prompt render: text, no \n
+		{Interval: 1, Code: "o", Data: "\x1b[32mecho \"STOP_RECORDIN\x1b[39m"}, // typing redraw, partial marker
+		{Interval: 1, Code: "o", Data: "\x1b[?1l"},                             // ZLE teardown
+		{Interval: 1, Code: "o", Data: "\x1b[?2004l\r\r\n"},                    // line accept: \n but whitespace-only
+		{Interval: 1, Code: "o", Data: "STOP_RECORDING\r\n"},
+		{Interval: 1, Code: "o", Data: "junk after"},
+	}}
+	head, tail := c.Crop("START_RECORDING", "STOP_RECORDING")
+	if head != 1 || tail != 6 {
+		t.Fatalf("crop counts: head=%d tail=%d, want 1/6", head, tail)
+	}
+	if len(c.Events) != 1 || c.Events[0].Data != "real output\r\n" {
+		t.Fatalf("cropped events: %+v", c.Events)
+	}
+}
+
 // with no STOP marker, Crop leaves the tail; TrimExit removes the stray exit event.
 func TestTrimExitOnDirtyTail(t *testing.T) {
 	c := parse(t, v3)

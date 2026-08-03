@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
 	"strings"
 )
 
@@ -189,6 +190,19 @@ func (c *Cast) Crop(startMark, stopMark string) (head, tail int) {
 			break
 		}
 	}
+	// The typed `echo "STOP_RECORDING"` leaks into the kept range: the marker only completes
+	// in the last keystroke's redraw, so the typing, its prompt, and the ZLE accept all sit
+	// before the matched event. Walk the boundary back until an event that paints real text
+	// ending a line — the previous command's actual last output.
+	if stop < len(c.Events) {
+		for stop > start+1 {
+			v := visibleText(c.Events[stop-1].Data)
+			if strings.Contains(v, "\n") && strings.TrimSpace(v) != "" {
+				break
+			}
+			stop--
+		}
+	}
 	head = start + 1 // start==-1 (not found) → head 0, no head trim
 	tail = len(c.Events) - stop
 	c.Events = c.Events[head:stop]
@@ -197,6 +211,12 @@ func (c *Cast) Crop(startMark, stopMark string) (head, tail int) {
 	}
 	return head, tail
 }
+
+// ansiSeq matches OSC (title etc.) and CSI/two-byte escape sequences — enough to reduce an
+// event to what it visibly paints for the crop-boundary heuristic above.
+var ansiSeq = regexp.MustCompile(`\x1b(\][^\x07]*\x07|\[[0-9;?]*[ -/]*[@-~]|.)`)
+
+func visibleText(s string) string { return ansiSeq.ReplaceAllString(s, "") }
 
 // TrimExit strips trailing exit artifacts — a v3 exit event [_, "x", _] and trailing events
 // whose visible output is just an EOT (^D), a "logout", or empty control noise. It is the
