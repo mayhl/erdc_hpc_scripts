@@ -36,3 +36,5 @@ ffmpeg = "latest" # static aqua build — no system codec/lib deps on the cluste
 fzf = "latest"    # shell integration sourced in zsh.tools.zsh (`fzf --zsh`), replaces ~/.fzf.zsh
 uv = "latest"     # backs the pipx tools — the backend only sees uv when it's config-ACTIVE
 tmux = "latest"
+zoxide = "latest" # smart cd — `z <frecent>` / `zi`; shell init in zsh.tools.zsh
+"ubi:iffse/pay-respects" = "latest" # command corrector (thefuck alt, Rust musl) — `f` fixes the last cmd; init in zsh.tools.zsh
