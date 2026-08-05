@@ -192,6 +192,7 @@ type castBuildOpts struct {
 	start string
 	stop  string
 	noSVG bool
+	mp4   bool
 }
 
 // defaultBuildOpts is the shared baseline — the build subcommand's flag defaults and the
@@ -208,7 +209,8 @@ func castBuildCmd() *cobra.Command {
 		Long: "Post-process one or more raw asciicast v3 recordings into a single svg: crop to the\n" +
 			"START/STOP markers, clamp idle gaps, stitch the parts in order, convert to asciicast\n" +
 			"v2 (svg-term reads v2 only), and render. A <cast> may be named with or without the\n" +
-			"'.cast' suffix. Writes <out>.v2.cast (the cleaned svg source) and <out>.svg.",
+			"'.cast' suffix. Writes <out>.v2.cast (the cleaned svg source) and <out>.svg;\n" +
+			"--mp4 adds <out>.mp4 (agg + ffmpeg) for embedding in slides.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runCastBuild(args, o)
@@ -222,6 +224,7 @@ func castBuildCmd() *cobra.Command {
 	f.StringVar(&o.start, "start", d.start, "`marker` to crop the head to")
 	f.StringVar(&o.stop, "stop", d.stop, "`marker` to crop the tail to")
 	f.BoolVar(&o.noSVG, "no-svg", false, "stop at the cleaned v2 cast; skip the svg render")
+	f.BoolVar(&o.mp4, "mp4", false, "also render an mp4 via agg + ffmpeg, for slide embeds")
 	setHelpArgs(cmd, [2]string{"<cast>...", "one or more raw .cast files, concatenated in order"})
 	return cmd
 }
@@ -276,10 +279,15 @@ func runCastBuild(inputs []string, o castBuildOpts) error {
 	}
 	render.OK(fmt.Sprintf("wrote %s (%.1fs, %d events)", v2Path, merged.Duration(), len(v2.Events)))
 
-	if o.noSVG {
-		return nil
+	if !o.noSVG {
+		if err := renderSVG(v2Path, out+".svg"); err != nil {
+			return err
+		}
 	}
-	return renderSVG(v2Path, out+".svg")
+	if o.mp4 {
+		return renderMP4(v2Path, out+".mp4")
+	}
+	return nil
 }
 
 func writeCast(path string, c *cast.Cast) error {
@@ -316,5 +324,38 @@ func renderSVG(v2Path, svgPath string) error {
 		return fmt.Errorf("svg-term: %w", err)
 	}
 	render.OK("wrote " + svgPath)
+	return nil
+}
+
+// renderMP4 renders the cleaned v2 cast to an mp4 for slide embedding: agg rasterizes the
+// cast to a gif (agg is gif-only), then the base tier's ffmpeg wraps it into a player-safe
+// mp4 (yuv420p + even dimensions — QuickTime/PowerPoint reject other layouts). Missing
+// tools are a SOFT failure, matching renderSVG: the cleaned cast and svg still stand.
+func renderMP4(v2Path, mp4Path string) error {
+	agg, aggErr := exec.LookPath("agg")
+	ffmpeg, ffErr := exec.LookPath("ffmpeg")
+	if aggErr != nil || ffErr != nil {
+		render.Warn("agg/ffmpeg not found — skipped the mp4 (add `cast` to MU_MODULES + `mu setup toolchain`)")
+		return nil
+	}
+	dir, err := os.MkdirTemp("", "mu-cast-mp4-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	gif := filepath.Join(dir, "cast.gif")
+	cmd := exec.Command(agg, v2Path, gif)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("agg: %w", err)
+	}
+	cmd = exec.Command(ffmpeg, "-y", "-loglevel", "error", "-i", gif,
+		"-movflags", "+faststart", "-pix_fmt", "yuv420p",
+		"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", mp4Path)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ffmpeg: %w", err)
+	}
+	render.OK("wrote " + mp4Path)
 	return nil
 }
