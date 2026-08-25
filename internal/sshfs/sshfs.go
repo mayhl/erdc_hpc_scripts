@@ -221,12 +221,16 @@ exec ${MU_SSH:-ssh} -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliv
 // SSHShimPath is the on-disk ssh transport shim — state, not cache: a mount's
 // ssh_command points here, so losing it breaks reconnects. One shim, all mounts.
 func SSHShimPath() string {
-	dir := os.Getenv("XDG_STATE_HOME")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".local", "state")
+	return filepath.Join(stateDir(), "mayhl_utils", "bin", "mu-sshfs-ssh")
+}
+
+// stateDir is XDG_STATE_HOME (default ~/.local/state) — shim + guard state live here.
+func stateDir() string {
+	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
+		return dir
 	}
-	return filepath.Join(dir, "mayhl_utils", "bin", "mu-sshfs-ssh")
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "state")
 }
 
 // EnsureSSHShim writes the ssh transport shim (idempotent — overwrites so option

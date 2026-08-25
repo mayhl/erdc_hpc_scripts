@@ -173,6 +173,8 @@ Scheduler-neutral; the list/cancel pair adapts to the idiom (`mstat`/`mdel` on P
 
 Every sshfs operation is timeout-bounded and **aborts on a fatal sshfs error** (e.g. a missing remote path) instead of hanging.
 
+`mu sshfs guard install` adds a launchd agent that ticks every 30 s: it **parks** (unmounts) a mount the laptop's AV is traversing — scanner busy, that mount's fuse-t daemons busy, none of your processes in it — and remounts it after a minute (a mount parked 3× in 15 min stays down until you `hmt` it), and unmounts any mount unused for 30 min. It never runs pkinit; `hls` shows guard-parked mounts as `◌ parked (av|idle)`, `mu sshfs guard status` shows what it holds, and `mu sshfs guard -n -v` previews a tick with the samples.
+
 **Tar** (both):
 
 | Command | Engine form | Does |

@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/mayhl/mayhl_utils/internal/config"
 )
 
 // ticketMargin is how close to expiry a ticket is still trusted: one about to
@@ -55,6 +57,18 @@ func ticketUsable(info TicketInfo, user string, now time.Time) bool {
 		return true
 	}
 	return now.Add(ticketMargin).Before(info.Expires)
+}
+
+// TicketOK reports whether a usable ticket for the configured HPC user is already
+// cached. Check-only — never runs pkinit, so an unattended caller (the sshfs guard
+// under launchd) can't pop a CAC prompt. True when Kerberos isn't in play.
+func TicketOK() bool {
+	user := config.HPCUser()
+	if user == "" {
+		return true
+	}
+	info, hasKlist := Ticket()
+	return !hasKlist || ticketUsable(info, user, time.Now())
 }
 
 // Ticket runs klist and returns the parsed credential state. The second return is

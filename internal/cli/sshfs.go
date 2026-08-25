@@ -22,7 +22,7 @@ func sshfsCmd() *cobra.Command {
 			"paths behave like local files. Local-only. The h* shell shortcuts below are the\n" +
 			"day-to-day front-doors (not 1:1 with the subcommands).",
 	}
-	c.AddCommand(sshfsListCmd(), sshfsMountCmd(), sshfsUmountCmd(), sshfsPathCmd(), sshfsAddCmd(), sshfsSetCmd(), sshfsRmCmd(), sshfsGroupCmd(false), sshfsGroupCmd(true), sshfsDoctorCmd())
+	c.AddCommand(sshfsListCmd(), sshfsMountCmd(), sshfsUmountCmd(), sshfsPathCmd(), sshfsAddCmd(), sshfsSetCmd(), sshfsRmCmd(), sshfsGroupCmd(false), sshfsGroupCmd(true), sshfsDoctorCmd(), sshfsGuardCmd())
 	setHelpShortcuts(
 		c,
 		[2]string{"hcd <name>", "mount if needed + cd into it (mu sshfs mount)"},
@@ -60,11 +60,17 @@ func sshfsListCmd() *cobra.Command {
 				names = append(names, n)
 			}
 			sort.Strings(names)
+			guard := sshfs.LoadGuardState()
 			rows := make([]render.MountRow, 0, len(reg))
 			for _, n := range names {
 				m := reg[n]
+				status := sshfs.Status(n)
+				// A mount the guard took down shows WHY it's down, not just that it is.
+				if why := guard.Parked(n); status == "unmounted" && why != "" {
+					status = "parked (" + why + ")"
+				}
 				rows = append(rows, render.MountRow{
-					Name: n, Node: m.Node, Path: m.Path, RO: m.RO, Status: sshfs.Status(n),
+					Name: n, Node: m.Node, Path: m.Path, RO: m.RO, Status: status,
 					Groups: strings.Join(m.Groups, ","),
 				})
 			}

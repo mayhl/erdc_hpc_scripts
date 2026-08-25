@@ -12,7 +12,7 @@ import (
 )
 
 // MountRow is one row of the `mu sshfs list` table. Status is one of
-// "mounted" | "hung" | "unmounted". Groups is the comma-joined group list (may be
+// "mounted" | "hung" | "unmounted" | "parked (av)" | "parked (idle)" (the guard's). Groups is the comma-joined group list (may be
 // empty); the Groups column is shown only when at least one row has groups.
 type MountRow struct {
 	Name, Node, Path, Status, Groups string
@@ -85,6 +85,8 @@ func statusBadge(status string) string {
 		return glyph("●", "*") + " mounted"
 	case "hung":
 		return glyph("!", "!") + " hung"
+	case "parked (av)", "parked (idle)":
+		return glyph("◌", "o") + " " + status
 	default:
 		return glyph("○", "o") + " not mounted"
 	}
@@ -95,7 +97,7 @@ func statusTransformer(v interface{}) string {
 	switch {
 	case strings.Contains(s, "not mounted"):
 		return text.Colors{text.FgHiBlack}.Sprint(s)
-	case strings.Contains(s, "hung"):
+	case strings.Contains(s, "hung"), strings.Contains(s, "parked"):
 		return text.Colors{text.FgYellow}.Sprint(s)
 	default:
 		return text.Colors{text.FgGreen}.Sprint(s)
