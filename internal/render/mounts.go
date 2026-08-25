@@ -77,6 +77,32 @@ func MountsTable(rows []MountRow, mountsRoot string) {
 	t.Render()
 }
 
+// GroupRow is one row of the `mu sshfs groups` table: a group, how many of its members
+// are up, and the members themselves.
+type GroupRow struct {
+	Group   string
+	Up, N   int
+	Members string
+}
+
+// GroupsTable renders the group → members view (the inverse of the Groups column).
+func GroupsTable(rows []GroupRow) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	applyStyle(t)
+	t.SetTitle("SSHFS Groups")
+	t.AppendHeader(table.Row{"Group", "Up", "Members"})
+	for _, r := range rows {
+		t.AppendRow(table.Row{r.Group, fmt.Sprintf("%d/%d", r.Up, r.N), r.Members})
+	}
+	t.SetColumnConfigs([]table.ColumnConfig{
+		{Name: "Group", Colors: text.Colors{text.FgBlue, text.Bold}},
+		{Name: "Up", Align: text.AlignRight, Colors: text.Colors{text.FgHiBlack}},
+		{Name: "Members", Colors: text.Colors{text.FgGreen}},
+	})
+	t.Render()
+}
+
 // statusBadge is the plain (uncolored) badge text; statusTransformer colors it
 // without changing width. Kept split so go-pretty measures the real display width.
 func statusBadge(status string) string {

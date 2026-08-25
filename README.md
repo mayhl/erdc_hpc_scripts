@@ -163,13 +163,14 @@ Scheduler-neutral; the list/cancel pair adapts to the idiom (`mstat`/`mdel` on P
 
 | Command | Engine form | Does |
 |---------|-------------|------|
-| `hadd <name> <node> <path>` | `mu sshfs add` | register a mount (name → node:path) |
+| `hadd <name> <node> <path> [-g group]` | `mu sshfs add` | register a mount (name → node:path), optionally grouped |
 | `hcd <name>` | `mu sshfs mount` + `cd` | mount (if needed) and cd in |
 | `hmt <name>… \| @group \| --all` | `mu sshfs mount` | mount one/many/a group/all, no cd |
 | `hls` | `mu sshfs list` | list mounts with live status + groups |
 | `hset <name> [--node\|--path\|--ro\|--rw]` | `mu sshfs set` | repoint or swap ro↔rw (remounts if live) |
-| `hum <name> \| --all` | `mu sshfs umount` | unmount one / all live |
+| `hum <name>… \| @group \| --all` | `mu sshfs umount` | unmount one/many/a group/all live |
 | `hgroup` / `hungroup <group> <name>…` | `mu sshfs group` | add/remove mounts to a free-form group |
+| `hgroups [rename <old> <new> \| rm <group>]` | `mu sshfs groups` | list groups → members; rename or dissolve one |
 
 Every sshfs operation is timeout-bounded and **aborts on a fatal sshfs error** (e.g. a missing remote path) instead of hanging.
 

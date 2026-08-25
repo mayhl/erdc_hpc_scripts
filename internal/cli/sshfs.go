@@ -22,7 +22,7 @@ func sshfsCmd() *cobra.Command {
 			"paths behave like local files. Local-only. The h* shell shortcuts below are the\n" +
 			"day-to-day front-doors (not 1:1 with the subcommands).",
 	}
-	c.AddCommand(sshfsListCmd(), sshfsMountCmd(), sshfsUmountCmd(), sshfsPathCmd(), sshfsAddCmd(), sshfsSetCmd(), sshfsRmCmd(), sshfsGroupCmd(false), sshfsGroupCmd(true), sshfsDoctorCmd(), sshfsGuardCmd())
+	c.AddCommand(sshfsListCmd(), sshfsMountCmd(), sshfsUmountCmd(), sshfsPathCmd(), sshfsAddCmd(), sshfsSetCmd(), sshfsRmCmd(), sshfsGroupCmd(false), sshfsGroupCmd(true), sshfsGroupsCmd(), sshfsDoctorCmd(), sshfsGuardCmd())
 	setHelpShortcuts(
 		c,
 		[2]string{"hcd <name>", "mount if needed + cd into it (mu sshfs mount)"},
@@ -30,8 +30,9 @@ func sshfsCmd() *cobra.Command {
 		[2]string{"hls", "list mounts with live status (mu sshfs list)"},
 		[2]string{"hadd", "register a new mount (mu sshfs add)"},
 		[2]string{"hset", "change/repoint a mount (mu sshfs set)"},
-		[2]string{"hum", "unmount; hum --all = all live (mu sshfs umount)"},
+		[2]string{"hum <name>…", "unmount; @group / --all = all live (mu sshfs umount)"},
 		[2]string{"hgroup <g> <n>…", "add mounts to a group (mu sshfs group)"},
+		[2]string{"hgroups", "list groups; rename / rm a group (mu sshfs groups)"},
 	)
 	return c
 }
@@ -42,6 +43,58 @@ func mountCompletion(_ *cobra.Command, args []string, toComplete string) ([]stri
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	return sshfs.CompleteMount(toComplete), cobra.ShellCompDirectiveNoFileComp
+}
+
+// mountsCompletion completes every position of a multi-mount verb (mount/umount) with
+// mount names and @group selectors; names already typed are dropped.
+func mountsCompletion(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	typed := map[string]bool{}
+	for _, a := range args {
+		typed[a] = true
+	}
+	var out []string
+	if strings.HasPrefix(toComplete, "@") {
+		for _, g := range groupNames(sshfs.ReadRegistry()) {
+			if sel := "@" + g; strings.HasPrefix(sel, toComplete) && !typed[sel] {
+				out = append(out, sel)
+			}
+		}
+		return out, cobra.ShellCompDirectiveNoFileComp
+	}
+	for _, n := range sshfs.CompleteMount(toComplete) {
+		if !typed[n] {
+			out = append(out, n)
+		}
+	}
+	if toComplete == "" { // offer the selectors alongside the names on a bare TAB
+		for _, g := range groupNames(sshfs.ReadRegistry()) {
+			out = append(out, "@"+g)
+		}
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+// groupThenMountsCompletion completes `<group> <name>...` (group/ungroup): existing
+// groups first, then mount names.
+func groupThenMountsCompletion(c *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) == 0 {
+		return groupCompletion(c, args, toComplete)
+	}
+	return mountsCompletion(c, args[1:], toComplete)
+}
+
+// groupCompletion completes the first arg with existing group names.
+func groupCompletion(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var out []string
+	for _, g := range groupNames(sshfs.ReadRegistry()) {
+		if strings.HasPrefix(g, toComplete) {
+			out = append(out, g)
+		}
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
 }
 
 func sshfsListCmd() *cobra.Command {
@@ -94,7 +147,7 @@ func sshfsMountCmd() *cobra.Command {
 			}
 			return cobra.MinimumNArgs(1)(nil, args)
 		},
-		ValidArgsFunction: mountCompletion,
+		ValidArgsFunction: mountsCompletion,
 		RunE: func(_ *cobra.Command, args []string) error {
 			if all && stale {
 				return usageErr("--all and --stale are mutually exclusive")
@@ -227,17 +280,201 @@ func expandMountArgs(args []string) ([]string, error) {
 
 // groupMembers returns the names of mounts belonging to group g, sorted.
 func groupMembers(reg map[string]sshfs.Mount, g string) []string {
-	var out []string
+	return allGroups(reg)[g]
+}
+
+// allGroups inverts the registry: group → sorted member names.
+func allGroups(reg map[string]sshfs.Mount) map[string][]string {
+	out := map[string][]string{}
 	for name, m := range reg {
-		for _, mg := range m.Groups {
-			if mg == g {
-				out = append(out, name)
-				break
-			}
+		for _, g := range m.Groups {
+			out[g] = append(out[g], name)
 		}
 	}
-	sort.Strings(out)
+	for g := range out {
+		sort.Strings(out[g])
+	}
 	return out
+}
+
+// groupNames lists the registry's groups, sorted.
+func groupNames(reg map[string]sshfs.Mount) []string {
+	groups := allGroups(reg)
+	names := make([]string, 0, len(groups))
+	for g := range groups {
+		names = append(names, g)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// nearGroup returns an existing group within typo distance of g (one edit for short
+// names, two from five chars up), or "". Pure. A mistyped group silently becomes a new
+// one — this is how a `sarcarst` is born next to `sarcast`.
+func nearGroup(existing []string, g string) string {
+	for _, ex := range existing {
+		if ex == g {
+			continue
+		}
+		limit := 2
+		if len(g) < 5 || len(ex) < 5 {
+			limit = 1
+		}
+		if editDistance(g, ex) <= limit {
+			return ex
+		}
+	}
+	return ""
+}
+
+// editDistance is the Levenshtein distance between a and b (byte-wise; group names are ASCII).
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	cur := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(b)]
+}
+
+// noteNewGroup announces a group that doesn't exist yet, or — when it looks like a typo
+// of one that does — asks first. False means the user declined.
+func noteNewGroup(reg map[string]sshfs.Mount, g string) bool {
+	if _, ok := allGroups(reg)[g]; ok {
+		return true
+	}
+	if near := nearGroup(groupNames(reg), g); near != "" {
+		if !confirm("%q is one typo away from existing group %q — create it anyway?", g, near) {
+			render.Info("aborted — `mu sshfs group " + near + " <name>…` adds to the existing group")
+			return false
+		}
+		return true
+	}
+	render.Info(fmt.Sprintf("new group %q", g))
+	return true
+}
+
+// renameGroup relabels group old as new on every member; returns how many changed.
+// Pure over the map (the caller writes the registry).
+func renameGroup(reg map[string]sshfs.Mount, old, new string) int {
+	n := 0
+	for name, m := range reg {
+		if dropGroup(&m, old) {
+			addGroup(&m, new)
+			reg[name] = m
+			n++
+		}
+	}
+	return n
+}
+
+// dropGroupAll removes group g from every member; returns how many changed.
+func dropGroupAll(reg map[string]sshfs.Mount, g string) int {
+	n := 0
+	for name, m := range reg {
+		if dropGroup(&m, g) {
+			reg[name] = m
+			n++
+		}
+	}
+	return n
+}
+
+// sshfsGroupsCmd builds `groups` — the group-level view and edits (list, rename, rm) —
+// as opposed to `group`/`ungroup`, which edit one mount's membership at a time.
+func sshfsGroupsCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "groups",
+		Short: "List groups with their members; `rename` / `rm` edit a whole group.",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			reg := sshfs.ReadRegistry()
+			groups := allGroups(reg)
+			if len(groups) == 0 {
+				render.Info("no groups — `mu sshfs group <group> <name>…` makes one")
+				return nil
+			}
+			var rows []render.GroupRow
+			for _, g := range groupNames(reg) {
+				members := groups[g]
+				up := 0
+				for _, n := range members {
+					if sshfs.IsMounted(sshfs.MountDir(n)) {
+						up++
+					}
+				}
+				rows = append(rows, render.GroupRow{Group: g, Up: up, N: len(members), Members: strings.Join(members, " ")})
+			}
+			render.GroupsTable(rows)
+			return nil
+		},
+	}
+
+	rename := &cobra.Command{
+		Use:   "rename <old> <new>",
+		Short: "Rename a group on every member (fix a typo).",
+		Args:  cobra.ExactArgs(2),
+		ValidArgsFunction: func(c *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			return groupCompletion(c, args, toComplete)
+		},
+		RunE: func(_ *cobra.Command, args []string) error {
+			old, new := args[0], args[1]
+			if err := validGroupName(new); err != nil {
+				return usageErr("%s", err)
+			}
+			reg := sshfs.ReadRegistry()
+			groups := allGroups(reg)
+			if _, ok := groups[old]; !ok {
+				return usageErr("no group %q (see `mu sshfs groups`)", old)
+			}
+			// Merging two groups silently is hard to undo — make it explicit.
+			if _, ok := groups[new]; ok && new != old {
+				return usageErr("group %q already exists — `mu sshfs group %s <name>…` to merge into it", new, new)
+			}
+			n := renameGroup(reg, old, new)
+			if err := sshfs.WriteRegistry(reg); err != nil {
+				return runErr("%s", err)
+			}
+			render.OK(fmt.Sprintf("renamed group %q → %q on %d mount(s)", old, new, n))
+			return nil
+		},
+	}
+	setHelpArgs(rename, [2]string{"<old>", "existing group"}, [2]string{"<new>", "its new name"})
+
+	rm := &cobra.Command{
+		Use:               "rm <group>",
+		Short:             "Drop a group from every member (the mounts stay registered).",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: groupCompletion,
+		RunE: func(_ *cobra.Command, args []string) error {
+			g := args[0]
+			reg := sshfs.ReadRegistry()
+			n := dropGroupAll(reg, g)
+			if n == 0 {
+				return usageErr("no group %q (see `mu sshfs groups`)", g)
+			}
+			if err := sshfs.WriteRegistry(reg); err != nil {
+				return runErr("%s", err)
+			}
+			render.OK(fmt.Sprintf("removed group %q from %d mount(s)", g, n))
+			return nil
+		},
+	}
+	setHelpArgs(rm, [2]string{"<group>", "group to dissolve"})
+
+	c.AddCommand(rename, rm)
+	return c
 }
 
 // validGroupName rejects names that would break the registry encoding (tab/comma),
@@ -260,15 +497,19 @@ func sshfsGroupCmd(remove bool) *cobra.Command {
 		use, short = "ungroup <group> <name>...", "Remove mounts from a group."
 	}
 	c := &cobra.Command{
-		Use:   use,
-		Short: short,
-		Args:  cobra.MinimumNArgs(2),
+		Use:               use,
+		Short:             short,
+		Args:              cobra.MinimumNArgs(2),
+		ValidArgsFunction: groupThenMountsCompletion,
 		RunE: func(_ *cobra.Command, args []string) error {
 			group, names := args[0], args[1:]
 			if err := validGroupName(group); err != nil {
 				return usageErr("%s", err)
 			}
 			reg := sshfs.ReadRegistry()
+			if !remove && !noteNewGroup(reg, group) {
+				return codeErr(1)
+			}
 			changed := 0
 			for _, name := range names {
 				m, ok := reg[name]
@@ -342,8 +583,8 @@ func dropGroup(m *sshfs.Mount, g string) bool {
 func sshfsUmountCmd() *cobra.Command {
 	var all bool
 	c := &cobra.Command{
-		Use:   "umount <name>",
-		Short: "Unmount a mount, or every live mount with --all.",
+		Use:   "umount <name>...",
+		Short: "Unmount mounts (names or @group), or every live mount with --all.",
 		Args: func(_ *cobra.Command, args []string) error {
 			if all {
 				if len(args) != 0 {
@@ -351,20 +592,30 @@ func sshfsUmountCmd() *cobra.Command {
 				}
 				return nil
 			}
-			return cobra.ExactArgs(1)(nil, args)
+			return cobra.MinimumNArgs(1)(nil, args)
 		},
-		ValidArgsFunction: mountCompletion,
+		ValidArgsFunction: mountsCompletion,
 		RunE: func(_ *cobra.Command, args []string) error {
 			if all {
 				return umountAll()
 			}
-			if !umountOne(args[0]) {
+			names, err := expandMountArgs(args)
+			if err != nil {
+				return usageErr("%s", err)
+			}
+			failed := 0
+			for _, n := range names {
+				if !umountOne(n) {
+					failed++
+				}
+			}
+			if failed > 0 {
 				return codeErr(1)
 			}
 			return nil
 		},
 	}
-	setHelpArgs(c, [2]string{"<name>", "registered mount to unmount (see mu sshfs list)"})
+	setHelpArgs(c, [2]string{"<name>", "registered mount name, or @group for every mount in a group"})
 	c.Flags().BoolVarP(&all, "all", "a", false, "unmount every live mount")
 	return c
 }
@@ -440,9 +691,10 @@ func sshfsPathCmd() *cobra.Command {
 
 func sshfsAddCmd() *cobra.Command {
 	var readOnly bool
+	var groups []string
 	c := &cobra.Command{
 		Use:   "add <name> <node> <path>",
-		Short: "Register a new mount (name → node:path). Does not mount.",
+		Short: "Register a new mount (name → node:path), optionally in --group(s). Does not mount.",
 		Args:  cobra.ExactArgs(3),
 		ValidArgsFunction: func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			switch len(args) {
@@ -464,7 +716,17 @@ func sshfsAddCmd() *cobra.Command {
 			if _, err := hpc.Resolve(node); err != nil { // validate the node resolves
 				return usageErr("%s", err)
 			}
-			reg[name] = sshfs.Mount{Node: node, Path: path, RO: readOnly}
+			m := sshfs.Mount{Node: node, Path: path, RO: readOnly}
+			for _, g := range groups {
+				if err := validGroupName(g); err != nil {
+					return usageErr("--group: %s", err)
+				}
+				if !noteNewGroup(reg, g) {
+					return codeErr(1)
+				}
+				addGroup(&m, g)
+			}
+			reg[name] = m
 			if err := sshfs.WriteRegistry(reg); err != nil {
 				return runErr("%s", err)
 			}
@@ -472,10 +734,15 @@ func sshfsAddCmd() *cobra.Command {
 			if readOnly {
 				roTag = " (ro)"
 			}
+			if len(m.Groups) > 0 {
+				roTag += " [" + strings.Join(m.Groups, ",") + "]"
+			}
 			render.OK(fmt.Sprintf("added %s → %s:%s%s", name, node, path, roTag))
 			return nil
 		},
 	}
+	c.Flags().StringSliceVarP(&groups, "group", "g", nil, "group(s) to put the mount in (repeat or comma-separate)")
+	_ = c.RegisterFlagCompletionFunc("group", groupCompletion)
 	setHelpArgs(c,
 		[2]string{"<name>", "short name to register the mount under"},
 		[2]string{"<node>", "cluster/node alias from the configured inventory"},

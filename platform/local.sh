@@ -86,6 +86,7 @@ mu_kitty_bootstrap() {
 # The mount name is the only handle; the local dir is the tool's business.
 # hcd [flags] <name>   mount (if needed) + cd into it;  no arg -> list.
 # Flags (e.g. -v) pass through to `mu sshfs mount`; the non-flag arg is the name.
+# An @group mounts the group but stays put — there's no single dir to cd into.
 hcd() {
   [ $# -eq 0 ] && {
     mu sshfs list
@@ -93,13 +94,14 @@ hcd() {
   }
   mu sshfs mount "$@" || return
   local a name=
-  for a in "$@"; do case "$a" in -*) ;; *) name=$a ;; esac done
+  for a in "$@"; do case "$a" in -* | @*) ;; *) name=$a ;; esac done
   [ -n "$name" ] && cd "$(mu sshfs path "$name")"
 }
 hmt() { mu sshfs mount "$@"; }        # mount, no cd; hmt <name>… / hmt @group / hmt --all
 hadd() { mu sshfs add "$@"; }         # hadd <name> <node> <remote-path>
 hset() { mu sshfs set "$@"; }         # hset <name> [--node|--path|--ro|--rw]
-hum() { mu sshfs umount "$@"; }       # unmount; hum --all = all live
+hum() { mu sshfs umount "$@"; }       # unmount; hum <name>… / hum @group / hum --all
 hgroup() { mu sshfs group "$@"; }     # hgroup <group> <name>…  add mounts to a group
 hungroup() { mu sshfs ungroup "$@"; } # hungroup <group> <name>…  remove
+hgroups() { mu sshfs groups "$@"; }   # list groups; hgroups rename <old> <new> / rm <group>
 alias hls='mu sshfs list'             # table with live status
